@@ -12,6 +12,11 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
 
     let original_branch = ctx.git.current_branch()?;
 
+    // Remember which stack we're in before sync modifies anything
+    let original_stack_name = ctx
+        .find_stack_for_branch(&original_branch)?
+        .map(|s| s.name);
+
     let stacks = if let Some(ref name) = args.stack {
         vec![ctx.load_stack(name)?]
     } else {
@@ -165,19 +170,13 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
     if still_tracked {
         // Our branch is still in a stack, go back to it
         let _ = ctx.git.checkout(&original_branch);
-    } else {
-        // Our branch was merged and removed. Find the next branch in the
-        // stack that contained it, or fall back to the base branch.
-        let all_stacks = ctx.load_all_stacks()?;
-
-        // Look for a stack that still has branches (the one we were syncing)
-        let next_branch = all_stacks.iter().find_map(|s| {
-            if !s.branches.is_empty() {
-                Some(s.branches[0].name.clone())
-            } else {
-                None
-            }
-        });
+    } else if let Some(ref stack_name) = original_stack_name {
+        // Our branch was merged. Check OUR stack specifically for remaining branches.
+        let our_stack = ctx.load_stack(stack_name).ok();
+        let next_branch = our_stack
+            .as_ref()
+            .and_then(|s| s.branches.first())
+            .map(|b| b.name.clone());
 
         match next_branch {
             Some(branch) => {
@@ -190,6 +189,10 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
                 ui::info(&format!("Switched to '{base}' (all branches merged)"));
             }
         }
+    } else {
+        // Wasn't in any stack, just go to base
+        let base = ctx.default_base_branch().unwrap_or_else(|_| "main".to_string());
+        let _ = ctx.git.checkout(&base);
     }
 
     Ok(())
