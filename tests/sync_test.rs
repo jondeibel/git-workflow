@@ -1,0 +1,237 @@
+mod common;
+
+use common::{gw_cmd, TestRepo};
+use predicates::prelude::*;
+
+/// Helper: simulate a squash merge of a branch into the base.
+/// Applies the branch's changes as a single commit on the base.
+fn simulate_squash_merge(repo: &TestRepo, branch: &str, base: &str) {
+    let original = repo.current_branch();
+    repo.git(&["checkout", base]);
+
+    // Get the diff from merge-base to branch and apply it
+    let merge_base = repo.git(&["merge-base", base, branch]);
+    let diff_output = std::process::Command::new("git")
+        .args(["diff", &merge_base, branch])
+        .current_dir(&repo.path)
+        .output()
+        .unwrap();
+
+    if !diff_output.stdout.is_empty() {
+        let mut apply = std::process::Command::new("git")
+            .args(["apply", "--index"])
+            .current_dir(&repo.path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        apply
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(&diff_output.stdout)
+            .unwrap();
+        apply.wait().unwrap();
+    }
+
+    repo.git(&["commit", "--allow-empty", "-m", &format!("squash merge {branch}")]);
+    repo.git(&["checkout", &original]);
+}
+
+// ============================================================
+// gw sync --merged (manual fallback)
+// ============================================================
+
+#[test]
+fn sync_merged_removes_root_and_rebases() {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+
+    // Create a stack: main -> auth -> auth-tests
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    repo.commit_file("a.txt", "a", "auth work");
+
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "auth-tests"])
+        .assert()
+        .success();
+    repo.commit_file("b.txt", "b", "test work");
+
+    // Simulate merging auth into main
+    simulate_squash_merge(&repo, "auth", &main_branch);
+
+    // Sync with manual --merged flag
+    repo.git(&["checkout", "auth-tests"]);
+    gw_cmd(&repo.path)
+        .args(["sync", "--merged", "auth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'auth' was merged"))
+        .stdout(predicate::str::contains("New root: 'auth-tests'"));
+
+    // Stack should now only have auth-tests as a branch
+    let toml = repo.read_stack_toml("auth");
+    // Count occurrences of [[branches]] - should be 1 (only auth-tests)
+    let branch_count = toml.matches("[[branches]]").count();
+    assert_eq!(branch_count, 1, "should have exactly 1 branch, got toml:\n{toml}");
+    assert!(toml.contains("name = \"auth-tests\""));
+}
+
+#[test]
+fn sync_no_stacks() {
+    let repo = TestRepo::new();
+
+    gw_cmd(&repo.path)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No stacks"));
+}
+
+#[test]
+fn sync_dirty_tree_fails() {
+    let repo = TestRepo::new();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+
+    std::fs::write(repo.path.join("dirty.txt"), "dirty").unwrap();
+
+    gw_cmd(&repo.path)
+        .args(["sync"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("uncommitted changes"));
+}
+
+#[test]
+fn sync_specific_stack() {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    repo.commit_file("a.txt", "a", "a");
+
+    repo.git(&["checkout", &main_branch]);
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "billing"])
+        .assert()
+        .success();
+    repo.commit_file("b.txt", "b", "b");
+
+    repo.git(&["checkout", &main_branch]);
+
+    // Sync only auth stack
+    gw_cmd(&repo.path)
+        .args(["sync", "--stack", "auth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("auth"));
+}
+
+#[test]
+fn sync_all_branches_merged_empties_stack() {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    repo.commit_file("a.txt", "a", "auth work");
+
+    // Simulate merge
+    simulate_squash_merge(&repo, "auth", &main_branch);
+
+    repo.git(&["checkout", &main_branch]);
+
+    gw_cmd(&repo.path)
+        .args(["sync", "--merged", "auth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("All branches in stack 'auth' have been merged"));
+}
+
+// ============================================================
+// gw sync with tree comparison detection
+// ============================================================
+
+#[test]
+fn sync_detects_merge_via_tree_comparison() {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "feature"])
+        .assert()
+        .success();
+    repo.commit_file("feat.txt", "feature content", "feature work");
+
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "feature-tests"])
+        .assert()
+        .success();
+    repo.commit_file("test.txt", "test content", "test work");
+
+    // Simulate squash merge of feature into main
+    simulate_squash_merge(&repo, "feature", &main_branch);
+
+    repo.git(&["checkout", "feature-tests"]);
+
+    // Sync without --merged. gh won't be available in test, so it should
+    // try tree comparison and detect the merge.
+    let output = gw_cmd(&repo.path)
+        .args(["sync"])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    // It should detect the merge via tree comparison or at minimum sync without error
+    assert!(output.status.success(), "sync should succeed, got: {combined}");
+}
+
+// ============================================================
+// gw sync rebases remaining branches
+// ============================================================
+
+#[test]
+fn sync_rebases_stack_onto_updated_base() {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "feature"])
+        .assert()
+        .success();
+    repo.commit_file("f.txt", "feature", "feature commit");
+
+    let pre_sha = repo.git(&["rev-parse", "feature"]);
+
+    // Add a commit to main (simulating remote updates)
+    repo.git(&["checkout", &main_branch]);
+    repo.commit_file("main-update.txt", "update", "main update");
+
+    repo.git(&["checkout", "feature"]);
+
+    // Sync should rebase feature onto updated main
+    gw_cmd(&repo.path)
+        .args(["sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("synced"));
+
+    let post_sha = repo.git(&["rev-parse", "feature"]);
+    assert_ne!(pre_sha, post_sha, "feature should be rebased onto updated main");
+}

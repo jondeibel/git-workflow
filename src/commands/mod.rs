@@ -1,4 +1,6 @@
 pub mod adopt;
 pub mod branch;
+pub mod push;
 pub mod rebase;
 pub mod stack;
+pub mod sync;

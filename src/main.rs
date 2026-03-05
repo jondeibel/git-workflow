@@ -46,14 +46,8 @@ fn main() -> Result<()> {
         Commands::Branch(args) => commands::branch::run(args.command, &ctx),
         Commands::Adopt(args) => commands::adopt::run(args, &ctx),
         Commands::Rebase(args) => commands::rebase::run(args, &ctx),
-        Commands::Sync(_args) => {
-            ui::info("Sync is not yet implemented (Phase 4).");
-            Ok(())
-        }
-        Commands::Push(_args) => {
-            ui::info("Push is not yet implemented (Phase 4).");
-            Ok(())
-        }
+        Commands::Sync(args) => commands::sync::run(args, &ctx),
+        Commands::Push(args) => commands::push::run(args, &ctx),
         Commands::Tree => {
             ui::info("Tree is not yet implemented (Phase 5).");
             Ok(())
