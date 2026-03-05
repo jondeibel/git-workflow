@@ -159,8 +159,37 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
         }
     }
 
-    if ctx.git.branch_exists(&original_branch)? {
+    // Smart checkout: if we were on a branch that got merged, switch to
+    // the next branch in its stack. If the whole stack was merged, go to base.
+    let still_tracked = ctx.find_stack_for_branch(&original_branch)?.is_some();
+    if still_tracked {
+        // Our branch is still in a stack, go back to it
         let _ = ctx.git.checkout(&original_branch);
+    } else {
+        // Our branch was merged and removed. Find the next branch in the
+        // stack that contained it, or fall back to the base branch.
+        let all_stacks = ctx.load_all_stacks()?;
+
+        // Look for a stack that still has branches (the one we were syncing)
+        let next_branch = all_stacks.iter().find_map(|s| {
+            if !s.branches.is_empty() {
+                Some(s.branches[0].name.clone())
+            } else {
+                None
+            }
+        });
+
+        match next_branch {
+            Some(branch) => {
+                let _ = ctx.git.checkout(&branch);
+                ui::info(&format!("Switched to '{branch}' (next in stack)"));
+            }
+            None => {
+                let base = ctx.default_base_branch().unwrap_or_else(|_| "main".to_string());
+                let _ = ctx.git.checkout(&base);
+                ui::info(&format!("Switched to '{base}' (all branches merged)"));
+            }
+        }
     }
 
     Ok(())
