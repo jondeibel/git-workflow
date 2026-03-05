@@ -8,8 +8,17 @@ use gw::{commands, state};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Default to `gw tree` when no subcommand is given
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            let ctx = Ctx::discover()?;
+            return commands::tree::run(&ctx, false);
+        }
+    };
+
     // Completions don't need a git repo
-    if let Commands::Completions(args) = &cli.command {
+    if let Commands::Completions(args) = &command {
         return commands::completions::run(&args.shell);
     }
 
@@ -18,10 +27,10 @@ fn main() -> Result<()> {
     // State guard: block most commands if a propagation is in progress
     if let Some(ref prop_state) = ctx.propagation_state()? {
         let allowed = matches!(
-            &cli.command,
+            &command,
             Commands::Rebase(args) if args.cont || args.abort
-        ) || matches!(&cli.command, Commands::Tree(_))
-            || matches!(&cli.command, Commands::Switch(_));
+        ) || matches!(&command, Commands::Tree(_))
+            || matches!(&command, Commands::Switch(_));
 
         if !allowed {
             let op = match prop_state.operation {
@@ -38,7 +47,7 @@ fn main() -> Result<()> {
         }
     }
 
-    match cli.command {
+    match command {
         Commands::Stack(args) => commands::stack::run(args.command, &ctx),
         Commands::Branch(args) => commands::branch::run(args.command, &ctx),
         Commands::Adopt(args) => commands::adopt::run(args, &ctx),
