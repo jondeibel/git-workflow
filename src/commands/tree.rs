@@ -58,7 +58,7 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
                 total_lines += 1;
             }
 
-            println!("{}  {}", "◇".cyan(), base.cyan().bold());
+            println!("{} {}", "◇".cyan(), base.cyan().bold());
             total_lines += 1;
 
             for (idx, branch) in stack.branches.iter().enumerate() {
@@ -85,7 +85,7 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
                     let pipe = if is_last { " " } else { "│" };
                     for (sha, subject) in commits {
                         println!(
-                            "{}   {} {} {}",
+                            "{}  {} {} {}",
                             pipe.dimmed(),
                             "│".dimmed(),
                             sha.yellow(),
@@ -95,11 +95,6 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
                     }
                 }
 
-                if !is_last {
-                    let pipe = if is_last { " " } else { "│" };
-                    println!("{}", pipe.dimmed());
-                    total_lines += 1;
-                }
             }
         }
     }
@@ -136,9 +131,6 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
                     line_idx += commits.len(); // commit lines
                 }
 
-                if !is_last {
-                    line_idx += 1; // spacing line
-                }
             }
         }
     }
@@ -233,7 +225,7 @@ fn format_branch_line(
     };
 
     let fork = if is_last { "╰─" } else { "├─" };
-    format!("{}  {marker}  {name_str}{tag_str}", fork.dimmed())
+    format!("{} {marker} {name_str}{tag_str}", fork.dimmed())
 }
 
 #[derive(Debug)]
