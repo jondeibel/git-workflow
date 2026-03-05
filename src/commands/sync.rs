@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::cli::SyncArgs;
 use crate::context::Ctx;

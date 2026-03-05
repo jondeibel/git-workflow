@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::git::Git;
