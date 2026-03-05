@@ -94,6 +94,11 @@ impl Git {
         self.run(&["rev-parse", refspec])
     }
 
+    /// Resolve a refspec to a short commit SHA.
+    pub fn rev_parse_short(&self, refspec: &str) -> Result<String> {
+        self.run(&["rev-parse", "--short", refspec])
+    }
+
     /// Check if a branch exists locally.
     pub fn branch_exists(&self, name: &str) -> Result<bool> {
         let output = self.run_raw(&["rev-parse", "--verify", &format!("refs/heads/{name}")])?;

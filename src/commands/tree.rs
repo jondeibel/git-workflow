@@ -30,7 +30,7 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
         }
     }
 
-    // Group stacks by base
+    // Group stacks by base branch
     let mut by_base: Vec<(String, Vec<usize>)> = vec![];
     for (i, stack) in stacks.iter().enumerate() {
         if let Some(entry) = by_base.iter_mut().find(|(b, _)| *b == stack.base_branch) {
@@ -40,33 +40,114 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
         }
     }
 
-    // Print the tree immediately (no PR info yet)
-    // Track which output lines correspond to which branches so we can update them
-    let mut total_lines = 0;
-    let mut branch_line_offsets: Vec<(String, usize)> = vec![]; // (branch_name, line_from_bottom)
+    // Compute how far behind the base branch tip each stack's root is
+    let mut behind_counts: HashMap<String, usize> = HashMap::new();
+    for stack in &stacks {
+        if let Some(root) = stack.branches.first() {
+            if let Ok(mb) = ctx.git.merge_base(&root.name, &stack.base_branch) {
+                let base_sha = ctx.git.rev_parse(&stack.base_branch).unwrap_or_default();
+                if mb != base_sha {
+                    if let Ok(count) = ctx.git.run(&[
+                        "rev-list", "--count", &format!("{mb}..{}", stack.base_branch),
+                    ]) {
+                        if let Ok(n) = count.parse::<usize>() {
+                            if n > 0 {
+                                behind_counts.insert(stack.name.clone(), n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    for (bi, (base, stack_indices)) in by_base.iter().enumerate() {
-        for &stack_idx in stack_indices {
+    // PR status (only when requested)
+    let pr_status = if show_pr {
+        gh::batch_pr_status()
+    } else {
+        HashMap::new()
+    };
+
+    // === Render ===
+    // Track total lines + branch positions for PR retroactive update
+    let mut total_lines = 0;
+    let mut branch_positions: HashMap<String, usize> = HashMap::new();
+
+    for (base, stack_indices) in &by_base {
+        // Base branch header (top-level root)
+        let base_sha = ctx.git.rev_parse_short(base).unwrap_or_default();
+
+        // Check if any stacks are behind
+        let max_behind = stack_indices
+            .iter()
+            .filter_map(|&si| behind_counts.get(&stacks[si].name))
+            .max()
+            .copied()
+            .unwrap_or(0);
+
+        let behind_tag = if max_behind > 0 {
+            format!(
+                "  {}",
+                format!(
+                    "{max_behind} commit{} behind origin/{base}",
+                    if max_behind == 1 { "" } else { "s" }
+                )
+                .yellow()
+            )
+        } else {
+            String::new()
+        };
+
+        println!("{} {}{behind_tag}", "◇".cyan(), base.cyan().bold());
+        total_lines += 1;
+
+        let total_stacks = stack_indices.len();
+        for (si, &stack_idx) in stack_indices.iter().enumerate() {
             let stack = &stacks[stack_idx];
             let branch_count = stack.branches.len();
             if branch_count == 0 {
                 continue;
             }
 
-            if total_lines > 0 {
-                println!();
-                total_lines += 1;
-            }
+            let is_last_stack = si == total_stacks - 1;
+            let stack_fork = if is_last_stack { "╰─" } else { "├─" };
+            let stack_pipe = if is_last_stack { "   " } else { "│  " };
 
-            println!("{} {}", "◇".cyan(), base.cyan().bold());
+            // Stack name line with behind info
+            let mut stack_tags: Vec<String> = vec![];
+            if let Some(&behind) = behind_counts.get(&stack.name) {
+                stack_tags.push(
+                    format!(
+                        "{behind} behind",
+                    )
+                    .yellow()
+                    .to_string(),
+                );
+            }
+            let stack_tag_str = if stack_tags.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", stack_tags.join("  "))
+            };
+
+            println!(
+                "{} {}{}",
+                stack_fork.dimmed(),
+                stack.name.magenta().bold(),
+                stack_tag_str
+            );
             total_lines += 1;
 
+            // Branches under this stack
             for (idx, branch) in stack.branches.iter().enumerate() {
-                let is_last = idx == branch_count - 1;
+                let is_last_branch = idx == branch_count - 1;
                 let is_current = branch.name == current_branch;
                 let is_root = idx == 0;
                 let info = ref_info.get(&branch.name);
                 let exists = info.is_some();
+
+                let branch_fork = if is_last_branch { "╰─" } else { "├─" };
+                let branch_pipe = if is_last_branch { "   " } else { "│  " };
 
                 let line = format_branch_line(
                     &branch.name,
@@ -74,19 +155,20 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
                     is_root,
                     exists,
                     info,
-                    is_last,
+                    is_last_branch,
                     None,
                 );
-                println!("{line}");
-                branch_line_offsets.push((branch.name.clone(), 0)); // placeholder
+                println!("{}{}", stack_pipe.dimmed(), line);
+                branch_positions.insert(branch.name.clone(), total_lines);
                 total_lines += 1;
 
+                // Commits
                 if let Some(commits) = commit_cache.get(&branch.name) {
-                    let pipe = if is_last { " " } else { "│" };
                     for (sha, subject) in commits {
                         println!(
-                            "{}  {} {} {}",
-                            pipe.dimmed(),
+                            "{}{}{} {} {}",
+                            stack_pipe.dimmed(),
+                            branch_pipe.dimmed(),
                             "│".dimmed(),
                             sha.yellow(),
                             subject.dimmed()
@@ -94,80 +176,42 @@ pub fn run(ctx: &Ctx, show_pr: bool) -> Result<()> {
                         total_lines += 1;
                     }
                 }
-
             }
         }
     }
 
-    // Now compute line offsets from the bottom for each branch
-    // We need to know how many lines from the end each branch line is
-    // so we can move the cursor up to overwrite it
-    let mut offset_from_end = total_lines;
-    let mut cursor = 0;
-    let mut branch_positions: HashMap<String, usize> = HashMap::new();
+    // Retroactive PR update
+    if show_pr && !pr_status.is_empty() {
+        for (_, stack_indices) in &by_base {
+            for &stack_idx in stack_indices {
+                let stack = &stacks[stack_idx];
+                let branch_count = stack.branches.len();
+                let is_last_stack = stack_indices.last() == Some(&stack_idx);
+                let stack_pipe = if is_last_stack { "   " } else { "│  " };
 
-    // Re-walk the structure to find positions
-    let mut line_idx = 0;
-    for (base, stack_indices) in &by_base {
-        for &stack_idx in stack_indices {
-            let stack = &stacks[stack_idx];
-            let branch_count = stack.branches.len();
-            if branch_count == 0 {
-                continue;
-            }
+                for (idx, branch) in stack.branches.iter().enumerate() {
+                    if let Some(pr) = pr_status.get(&branch.name) {
+                        if let Some(&line_pos) = branch_positions.get(&branch.name) {
+                            let is_last_branch = idx == branch_count - 1;
+                            let is_current = branch.name == current_branch;
+                            let is_root = idx == 0;
+                            let info = ref_info.get(&branch.name);
+                            let exists = info.is_some();
 
-            if line_idx > 0 {
-                line_idx += 1; // blank line
-            }
-            line_idx += 1; // base header
-
-            for (idx, branch) in stack.branches.iter().enumerate() {
-                let is_last = idx == branch_count - 1;
-
-                branch_positions.insert(branch.name.clone(), line_idx);
-                line_idx += 1; // branch line
-
-                if let Some(commits) = commit_cache.get(&branch.name) {
-                    line_idx += commits.len(); // commit lines
-                }
-
-            }
-        }
-    }
-
-    // If PR display requested, fetch and update in-place
-    if show_pr {
-        let pr_status = gh::batch_pr_status();
-        if !pr_status.is_empty() {
-            // Move cursor up and redraw branch lines that have PR info
-            for (base, stack_indices) in &by_base {
-                for &stack_idx in stack_indices {
-                    let stack = &stacks[stack_idx];
-                    let branch_count = stack.branches.len();
-
-                    for (idx, branch) in stack.branches.iter().enumerate() {
-                        if let Some(pr) = pr_status.get(&branch.name) {
-                            if let Some(&line_pos) = branch_positions.get(&branch.name) {
-                                let is_last = idx == branch_count - 1;
-                                let is_current = branch.name == current_branch;
-                                let is_root = idx == 0;
-                                let info = ref_info.get(&branch.name);
-                                let exists = info.is_some();
-
-                                let lines_up = total_lines - line_pos;
-                                let new_line = format_branch_line(
-                                    &branch.name,
-                                    is_current,
-                                    is_root,
-                                    exists,
-                                    info,
-                                    is_last,
-                                    Some(pr),
-                                );
-
-                                // ANSI: move up N lines, clear line, print, move down
-                                print!("\x1b[{lines_up}A\r\x1b[2K{new_line}\x1b[{lines_up}B\r");
-                            }
+                            let lines_up = total_lines - line_pos;
+                            let new_line = format_branch_line(
+                                &branch.name,
+                                is_current,
+                                is_root,
+                                exists,
+                                info,
+                                is_last_branch,
+                                Some(pr),
+                            );
+                            print!(
+                                "\x1b[{lines_up}A\r\x1b[2K{}{new_line}\x1b[{lines_up}B\r",
+                                stack_pipe.dimmed()
+                            );
                         }
                     }
                 }
@@ -243,34 +287,26 @@ struct RefInfo {
 
 fn batch_ref_info(ctx: &Ctx) -> HashMap<String, RefInfo> {
     let mut result = HashMap::new();
-
     let output = ctx.git.run(&[
         "for-each-ref",
         "--format=%(refname:short)\t%(objectname:short)\t%(upstream:short)\t%(upstream:track)",
         "refs/heads/",
     ]);
-
     let output = match output {
         Ok(o) => o,
         Err(_) => return result,
     };
-
     for line in output.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() < 4 {
             if let Some(name) = parts.first() {
-                result.insert(
-                    name.to_string(),
-                    RefInfo { remote_status: RemoteStatus::NoRemote },
-                );
+                result.insert(name.to_string(), RefInfo { remote_status: RemoteStatus::NoRemote });
             }
             continue;
         }
-
         let name = parts[0];
         let upstream = parts[2];
         let track = parts[3];
-
         let remote_status = if upstream.is_empty() {
             RemoteStatus::NoRemote
         } else if track.is_empty() {
@@ -282,9 +318,7 @@ fn batch_ref_info(ctx: &Ctx) -> HashMap<String, RefInfo> {
         } else {
             RemoteStatus::UpToDate
         };
-
         result.insert(name.to_string(), RefInfo { remote_status });
     }
-
     result
 }
