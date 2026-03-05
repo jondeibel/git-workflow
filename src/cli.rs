@@ -104,7 +104,7 @@ pub struct AdoptArgs {
 #[derive(Args)]
 pub struct RebaseArgs {
     /// Continue after resolving conflicts
-    #[arg(long, name = "continue", conflicts_with = "abort")]
+    #[arg(long = "continue", id = "continue", conflicts_with = "abort")]
     pub cont: bool,
     /// Abort and roll back all branches
     #[arg(long, conflicts_with = "continue")]

@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod context;
 mod git;
+mod propagation;
 mod state;
 mod ui;
 mod validate;
@@ -44,10 +45,7 @@ fn main() -> Result<()> {
         Commands::Stack(args) => commands::stack::run(args.command, &ctx),
         Commands::Branch(args) => commands::branch::run(args.command, &ctx),
         Commands::Adopt(args) => commands::adopt::run(args, &ctx),
-        Commands::Rebase(_args) => {
-            ui::info("Rebase is not yet implemented (Phase 3).");
-            Ok(())
-        }
+        Commands::Rebase(args) => commands::rebase::run(args, &ctx),
         Commands::Sync(_args) => {
             ui::info("Sync is not yet implemented (Phase 4).");
             Ok(())
