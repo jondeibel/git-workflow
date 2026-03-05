@@ -29,9 +29,7 @@ fn do_rebase(ctx: &Ctx) -> Result<()> {
         }
     };
 
-    if !ctx.git.is_working_tree_clean()? {
-        bail!("You have uncommitted changes. Commit or stash before running this command.");
-    }
+    ctx.require_clean_tree()?;
 
     let descendants = stack.descendants_of(&current);
     if descendants.is_empty() {
@@ -42,7 +40,7 @@ fn do_rebase(ctx: &Ctx) -> Result<()> {
     let branches: Vec<String> = descendants.iter().map(|b| b.name.clone()).collect();
     let targets: Vec<String> = branches
         .iter()
-        .map(|b| stack.parent_of(b).unwrap())
+        .map(|b| stack.parent_of(b).expect("descendant should have a parent"))
         .collect();
 
     ui::info(&format!(

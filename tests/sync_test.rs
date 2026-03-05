@@ -1,42 +1,7 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use common::{gw_cmd, simulate_squash_merge, TestRepo};
 use predicates::prelude::*;
-
-/// Helper: simulate a squash merge of a branch into the base.
-/// Applies the branch's changes as a single commit on the base.
-fn simulate_squash_merge(repo: &TestRepo, branch: &str, base: &str) {
-    let original = repo.current_branch();
-    repo.git(&["checkout", base]);
-
-    // Get the diff from merge-base to branch and apply it
-    let merge_base = repo.git(&["merge-base", base, branch]);
-    let diff_output = std::process::Command::new("git")
-        .args(["diff", &merge_base, branch])
-        .current_dir(&repo.path)
-        .output()
-        .unwrap();
-
-    if !diff_output.stdout.is_empty() {
-        let mut apply = std::process::Command::new("git")
-            .args(["apply", "--index"])
-            .current_dir(&repo.path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        use std::io::Write;
-        apply
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(&diff_output.stdout)
-            .unwrap();
-        apply.wait().unwrap();
-    }
-
-    repo.git(&["commit", "--allow-empty", "-m", &format!("squash merge {branch}")]);
-    repo.git(&["checkout", &original]);
-}
 
 // ============================================================
 // gw sync --merged (manual fallback)

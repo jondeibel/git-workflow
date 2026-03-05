@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use colored::Colorize;
 
 use crate::cli::ConfigCommands;
 use crate::context::Ctx;
@@ -51,5 +52,3 @@ fn show(ctx: &Ctx) -> Result<()> {
 
     Ok(())
 }
-
-use colored::Colorize;

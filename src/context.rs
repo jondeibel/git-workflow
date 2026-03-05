@@ -33,6 +33,14 @@ impl Ctx {
         })
     }
 
+    /// Bail if the working tree has uncommitted changes.
+    pub fn require_clean_tree(&self) -> Result<()> {
+        if !self.git.is_working_tree_clean()? {
+            anyhow::bail!("You have uncommitted changes. Commit or stash before running this command.");
+        }
+        Ok(())
+    }
+
     /// Ensure .git/gw/ and .git/gw/stacks/ directories exist.
     pub fn ensure_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(&self.stacks_dir)
@@ -46,26 +54,17 @@ impl Ctx {
     }
 
     /// Save a stack config.
+    /// Path traversal is prevented by validate_stack_name() which rejects '/', '\', and '..'.
     pub fn save_stack(&self, config: &StackConfig) -> Result<()> {
         self.ensure_dirs()?;
         let path = self.stacks_dir.join(format!("{}.toml", config.name));
-
-        // Verify the resolved path is actually under stacks_dir (path traversal defense)
-        let canonical_stacks = self.stacks_dir.canonicalize().unwrap_or(self.stacks_dir.clone());
-        if let Ok(canonical_path) = path.canonicalize() {
-            if !canonical_path.starts_with(&canonical_stacks) {
-                anyhow::bail!(
-                    "Stack name would write outside of {}: refusing",
-                    self.stacks_dir.display()
-                );
-            }
-        }
 
         state::save_stack(&path, config)
     }
 
     /// Delete a stack's TOML file.
     pub fn delete_stack(&self, name: &str) -> Result<()> {
+        crate::validate::validate_stack_name(name)?;
         let path = self.stacks_dir.join(format!("{name}.toml"));
         if path.exists() {
             std::fs::remove_file(&path)
@@ -130,19 +129,6 @@ impl Ctx {
     /// Remove propagation state.
     pub fn remove_propagation_state(&self) -> Result<()> {
         state::remove_propagation_state(&self.state_path)
-    }
-
-    /// Validate that tracked branches still exist in git.
-    /// Returns a set of missing branch names.
-    pub fn validate_branches(&self, stack: &StackConfig) -> Result<HashSet<String>> {
-        let existing = self.git.all_local_branches()?;
-        let mut missing = HashSet::new();
-        for branch in &stack.branches {
-            if !existing.contains(&branch.name) {
-                missing.insert(branch.name.clone());
-            }
-        }
-        Ok(missing)
     }
 
     /// Load gw config (returns defaults if no config file exists).

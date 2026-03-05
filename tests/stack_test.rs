@@ -233,7 +233,7 @@ current = "feature-b"
         .assert()
         .failure()
         .stderr(predicate::str::contains("propagation is in progress"))
-        .stdout(predicate::str::contains("gw rebase --continue"));
+        .stderr(predicate::str::contains("gw rebase --continue"));
 
     // stack list should be blocked
     gw_cmd(&repo.path)

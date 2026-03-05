@@ -1,6 +1,6 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use common::{gw_cmd, is_ancestor, simulate_squash_merge, TestRepo};
 use predicates::prelude::*;
 
 /// End-to-end test covering the full workflow:
@@ -68,31 +68,7 @@ fn full_workflow_create_branch_rebase_sync() {
     assert!(is_ancestor(&repo, "auth-tests", "auth-ui"));
 
     // === Step 5: Simulate auth getting merged into main ===
-    repo.git(&["checkout", &main_branch]);
-    // Simulate squash merge: apply auth's changes to main
-    let merge_base = repo.git(&["merge-base", &main_branch, "auth"]);
-    let diff = std::process::Command::new("git")
-        .args(["diff", &merge_base, "auth"])
-        .current_dir(&repo.path)
-        .output()
-        .unwrap();
-    if !diff.stdout.is_empty() {
-        let mut apply = std::process::Command::new("git")
-            .args(["apply", "--index"])
-            .current_dir(&repo.path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        use std::io::Write;
-        apply
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(&diff.stdout)
-            .unwrap();
-        apply.wait().unwrap();
-    }
-    repo.git(&["commit", "--allow-empty", "-m", "squash merge auth (#1)"]);
+    simulate_squash_merge(&repo, "auth", &main_branch);
 
     // === Step 6: Sync - should detect merge and promote ===
     repo.git(&["checkout", "auth-tests"]);
@@ -290,14 +266,4 @@ fn error_recovery_dirty_tree() {
         .args(["stack", "list"])
         .assert()
         .success();
-}
-
-fn is_ancestor(repo: &TestRepo, ancestor: &str, descendant: &str) -> bool {
-    std::process::Command::new("git")
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .current_dir(&repo.path)
-        .output()
-        .unwrap()
-        .status
-        .success()
 }

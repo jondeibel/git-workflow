@@ -7,9 +7,6 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// Show verbose output (git commands being run)
-    #[arg(short, long, global = true)]
-    pub verbose: bool,
 }
 
 #[derive(Subcommand)]

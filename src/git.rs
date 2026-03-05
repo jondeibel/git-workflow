@@ -80,7 +80,7 @@ impl Git {
             .with_context(|| format!("failed to execute git {}", args.first().unwrap_or(&"")))
     }
 
-    pub fn repo_path(&self) -> &PathBuf {
+    pub fn repo_path(&self) -> &std::path::Path {
         &self.repo_path
     }
 
@@ -92,11 +92,6 @@ impl Git {
     /// Resolve a refspec to a full commit SHA.
     pub fn rev_parse(&self, refspec: &str) -> Result<String> {
         self.run(&["rev-parse", refspec])
-    }
-
-    /// Resolve a refspec to a short commit SHA.
-    pub fn rev_parse_short(&self, refspec: &str) -> Result<String> {
-        self.run(&["rev-parse", "--short", refspec])
     }
 
     /// Check if a branch exists locally.
@@ -229,18 +224,11 @@ impl Git {
         Ok(!local_is_ancestor && !remote_is_ancestor)
     }
 
-    /// Count commits between base and head.
-    pub fn commit_count_between(&self, base: &str, head: &str) -> Result<usize> {
-        let output = self.run(&["rev-list", "--count", &format!("{base}..{head}")])?;
-        output
-            .parse::<usize>()
-            .with_context(|| format!("failed to parse commit count: '{output}'"))
-    }
-
     /// Get commits between base and head as (short_sha, subject) pairs.
     pub fn log_oneline(&self, base: &str, head: &str, limit: usize) -> Result<Vec<(String, String)>> {
         let output = self.run(&[
             "log",
+            "--reverse",
             "--oneline",
             "--format=%h %s",
             &format!("--max-count={limit}"),
@@ -286,6 +274,13 @@ impl Git {
     /// Atomically update multiple refs using git update-ref --stdin.
     /// Each entry is (branch_name, target_sha).
     pub fn update_ref_transaction(&self, updates: &[(String, String)]) -> Result<()> {
+        // Validate SHA values to prevent newline injection into the stdin protocol
+        for (branch, sha) in updates {
+            if !sha.chars().all(|c| c.is_ascii_hexdigit()) || sha.is_empty() {
+                return Err(anyhow!("invalid SHA for branch '{branch}': '{sha}'"));
+            }
+        }
+
         let mut stdin_content = String::from("start\n");
         for (branch, sha) in updates {
             stdin_content.push_str(&format!("update refs/heads/{branch} {sha}\n"));
@@ -407,22 +402,6 @@ mod tests {
         git.create_branch("test-branch", &head).unwrap();
         git.checkout("test-branch").unwrap();
         assert_eq!(git.current_branch().unwrap(), "test-branch");
-    }
-
-    #[test]
-    fn test_commit_count_between() {
-        let (_dir, git) = setup_test_repo();
-        let base = git.rev_parse("HEAD").unwrap();
-
-        // Create a branch and add a commit
-        git.create_branch("feature", &base).unwrap();
-        git.checkout("feature").unwrap();
-        std::fs::write(git.repo_path().join("new.txt"), "new").unwrap();
-        git.run(&["add", "."]).unwrap();
-        git.run(&["commit", "-m", "add new file"]).unwrap();
-
-        let count = git.commit_count_between(&base, "feature").unwrap();
-        assert_eq!(count, 1);
     }
 
     #[test]

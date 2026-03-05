@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 
 use gw::cli::{Cli, Commands};
 use gw::context::Ctx;
-use gw::{commands, state, ui};
+use gw::{commands, state};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -18,18 +18,17 @@ fn main() -> Result<()> {
         ) || matches!(&cli.command, Commands::Tree);
 
         if !allowed {
-            ui::error(&format!(
-                "A {} propagation is in progress on stack '{}'.",
-                match prop_state.operation {
-                    state::Operation::Rebase => "rebase",
-                    state::Operation::Sync => "sync",
-                    state::Operation::Adopt => "adopt",
-                    state::Operation::BranchRemove => "branch remove",
-                },
+            let op = match prop_state.operation {
+                state::Operation::Rebase => "rebase",
+                state::Operation::Sync => "sync",
+                state::Operation::Adopt => "adopt",
+                state::Operation::BranchRemove => "branch remove",
+            };
+            bail!(
+                "A {op} propagation is in progress on stack '{}'.\n\
+                 Run `gw rebase --continue` or `gw rebase --abort` first.",
                 prop_state.stack
-            ));
-            ui::info("Run `gw rebase --continue` or `gw rebase --abort` first.");
-            std::process::exit(1);
+            );
         }
     }
 

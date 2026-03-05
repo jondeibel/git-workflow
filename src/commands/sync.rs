@@ -2,18 +2,16 @@ use anyhow::{bail, Result};
 
 use crate::cli::SyncArgs;
 use crate::context::Ctx;
+use crate::gh;
 use crate::propagation::{self, PropagationResult};
 use crate::state::Operation;
 use crate::ui;
 
 pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
-    if !ctx.git.is_working_tree_clean()? {
-        bail!("You have uncommitted changes. Commit or stash before running this command.");
-    }
+    ctx.require_clean_tree()?;
 
     let original_branch = ctx.git.current_branch()?;
 
-    // Load stacks to sync
     let stacks = if let Some(ref name) = args.stack {
         vec![ctx.load_stack(name)?]
     } else {
@@ -25,7 +23,9 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
 
-    // Group stacks by base branch
+    // Batch PR status once for all merge detection
+    let pr_map = gh::batch_pr_status();
+
     let mut synced_bases = std::collections::HashSet::new();
 
     for mut stack in stacks {
@@ -36,10 +36,9 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
             ui::info(&format!("Fetching {base}..."));
             match ctx.git.fetch_branch("origin", base) {
                 Ok(_) => {
-                    // Update local ref to match remote without checkout
-                    let _ = ctx
-                        .git
-                        .update_local_ref(base, &format!("origin/{base}"));
+                    if let Err(e) = ctx.git.update_local_ref(base, &format!("origin/{base}")) {
+                        ui::warn(&format!("Could not update local ref for {base}: {e}"));
+                    }
                 }
                 Err(_) => {
                     ui::warn(&format!(
@@ -62,10 +61,9 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
             };
 
             let is_merged = if let Some(ref merged_branch) = args.merged {
-                // Manual override
                 *merged_branch == root
             } else {
-                detect_merged(ctx, &root, &stack.base_branch)?
+                detect_merged(ctx, &root, &stack.base_branch, &pr_map)?
             };
 
             if is_merged {
@@ -88,7 +86,6 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
                 let new_root = &stack.branches[0].name;
                 ui::info(&format!("New root: '{new_root}'"));
 
-                // Only process one manual --merged per sync
                 if args.merged.is_some() {
                     break;
                 }
@@ -106,10 +103,11 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
             let branches: Vec<String> =
                 stack.branches.iter().map(|b| b.name.clone()).collect();
 
-            // Build onto targets: first branch onto base, rest onto their parent
             let mut targets = Vec::new();
             for branch_name in &branches {
-                let parent = stack.parent_of(branch_name).unwrap();
+                let parent = stack
+                    .parent_of(branch_name)
+                    .expect("branch should have a parent in its stack");
                 targets.push(parent);
             }
 
@@ -140,14 +138,12 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
                         stack.name
                     ));
                     ui::info("Resolve conflicts and run `gw rebase --continue`.");
-                    // Return to let user handle conflict
                     return Ok(());
                 }
             }
         }
     }
 
-    // Return to original branch if possible
     if ctx.git.branch_exists(&original_branch)? {
         let _ = ctx.git.checkout(&original_branch);
     }
@@ -156,11 +152,16 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
 }
 
 /// Detect if a branch has been merged into the base branch.
-/// Uses gh CLI if available, falls back to tree comparison, then gives up.
-fn detect_merged(ctx: &Ctx, branch: &str, base: &str) -> Result<bool> {
-    // Try gh CLI first
-    if let Ok(result) = detect_merged_via_gh(branch) {
-        return Ok(result);
+/// Uses batched gh PR data first, falls back to tree comparison.
+fn detect_merged(
+    ctx: &Ctx,
+    branch: &str,
+    base: &str,
+    pr_map: &std::collections::HashMap<String, gh::PrInfo>,
+) -> Result<bool> {
+    // Check batched gh data first (no extra subprocess)
+    if gh::is_branch_merged(pr_map, branch) {
+        return Ok(true);
     }
 
     // Try tree comparison (commit-tree + cherry)
@@ -168,45 +169,13 @@ fn detect_merged(ctx: &Ctx, branch: &str, base: &str) -> Result<bool> {
         return Ok(result);
     }
 
-    // Can't detect
     Ok(false)
 }
 
-/// Detect merge via gh CLI: check if there's a merged PR for this branch.
-fn detect_merged_via_gh(branch: &str) -> Result<bool> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--state",
-            "merged",
-            "--json",
-            "headRefName",
-            "--limit",
-            "1",
-        ])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            // If the JSON array is non-empty, there's a merged PR
-            let trimmed = stdout.trim();
-            Ok(trimmed != "[]" && !trimmed.is_empty())
-        }
-        _ => bail!("gh not available"),
-    }
-}
-
-/// Detect merge via tree comparison:
-/// Create a synthetic squash commit and use git cherry to check equivalence.
+/// Detect merge via tree comparison.
 fn detect_merged_via_tree(ctx: &Ctx, branch: &str, base: &str) -> Result<bool> {
-    // Get the merge base
     let merge_base = ctx.git.merge_base(branch, base)?;
 
-    // Create a synthetic squash commit
     let tree = ctx.git.run(&["rev-parse", &format!("{branch}^{{tree}}")])?;
     let synthetic = ctx.git.run(&[
         "commit-tree",
@@ -217,9 +186,7 @@ fn detect_merged_via_tree(ctx: &Ctx, branch: &str, base: &str) -> Result<bool> {
         "synthetic squash for merge detection",
     ])?;
 
-    // Use git cherry to check if base contains an equivalent patch
     let cherry_output = ctx.git.run(&["cherry", base, &synthetic])?;
 
-    // If cherry returns a line starting with "-", the patch is already in base
     Ok(cherry_output.lines().any(|line| line.starts_with('-')))
 }

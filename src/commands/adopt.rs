@@ -12,7 +12,7 @@ pub fn run(args: AdoptArgs, ctx: &Ctx) -> Result<()> {
         validate::validate_branch_name(name)?;
     }
 
-    if args.branches.len() < 1 {
+    if args.branches.is_empty() {
         bail!("At least one branch is required.");
     }
 
@@ -57,7 +57,9 @@ pub fn run(args: AdoptArgs, ctx: &Ctx) -> Result<()> {
         None => {
             // Use the first branch name, but sanitized for stack name
             // (replace slashes with hyphens since stack names can't have slashes)
-            args.branches[0].replace('/', "-")
+            let derived = args.branches[0].replace('/', "-");
+            validate::validate_stack_name(&derived)?;
+            derived
         }
     };
 
@@ -69,9 +71,7 @@ pub fn run(args: AdoptArgs, ctx: &Ctx) -> Result<()> {
     let needs_rebase = !branches_are_chained(ctx, &base_branch, &args.branches)?;
 
     if needs_rebase {
-        if !ctx.git.is_working_tree_clean()? {
-            bail!("You have uncommitted changes. Commit or stash before running this command.");
-        }
+        ctx.require_clean_tree()?;
 
         if !args.yes {
             if !ui::confirm(

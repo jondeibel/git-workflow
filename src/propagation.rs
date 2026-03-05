@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 
 use crate::context::Ctx;
 use crate::git::RebaseResult;
@@ -29,9 +29,8 @@ pub fn start(
         return Ok(PropagationResult::Success { rebased_count: 0 });
     }
 
-    assert_eq!(
-        branches_to_rebase.len(),
-        onto_targets.len(),
+    ensure!(
+        branches_to_rebase.len() == onto_targets.len(),
         "branches and targets must have same length"
     );
 

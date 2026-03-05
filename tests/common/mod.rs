@@ -97,6 +97,50 @@ impl TestRepo {
     }
 }
 
+/// Check if `ancestor` is an ancestor of `descendant`.
+pub fn is_ancestor(repo: &TestRepo, ancestor: &str, descendant: &str) -> bool {
+    Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .current_dir(&repo.path)
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+/// Simulate a squash merge of a branch into the base.
+pub fn simulate_squash_merge(repo: &TestRepo, branch: &str, base: &str) {
+    let original = repo.current_branch();
+    repo.git(&["checkout", base]);
+
+    let merge_base = repo.git(&["merge-base", base, branch]);
+    let diff = Command::new("git")
+        .args(["diff", &merge_base, branch])
+        .current_dir(&repo.path)
+        .output()
+        .unwrap();
+
+    if !diff.stdout.is_empty() {
+        use std::io::Write;
+        let mut apply = Command::new("git")
+            .args(["apply", "--index"])
+            .current_dir(&repo.path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        apply
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(&diff.stdout)
+            .unwrap();
+        apply.wait().unwrap();
+    }
+
+    repo.git(&["commit", "--allow-empty", "-m", &format!("squash merge {branch}")]);
+    repo.git(&["checkout", &original]);
+}
+
 /// Run gw binary in a given directory and return the Command for assertion.
 pub fn gw_cmd(repo_path: &Path) -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::cargo_bin("gw").unwrap();

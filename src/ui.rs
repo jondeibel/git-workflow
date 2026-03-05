@@ -27,11 +27,10 @@ pub fn confirm(prompt: &str, default: bool) -> bool {
     }
 }
 
-/// Check if stdin is likely interactive (heuristic).
+/// Check if stdin is interactive.
 fn atty_check() -> bool {
-    // Use a simple heuristic: try to check if /dev/tty is readable
-    // This is imperfect but avoids adding a dependency for v1
-    std::fs::metadata("/dev/tty").is_ok()
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 /// Print a success message.

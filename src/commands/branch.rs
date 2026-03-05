@@ -85,13 +85,11 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
 
     if has_child {
         // The child needs to be rebased onto the removed branch's parent
-        let parent = stack.parent_of(name).unwrap();
+        let parent = stack.parent_of(name).expect("tracked branch should have a parent");
         let child_name = stack.branches[idx + 1].name.clone();
 
         // Check working tree is clean before rebasing
-        if !ctx.git.is_working_tree_clean()? {
-            bail!("You have uncommitted changes. Commit or stash before running this command.");
-        }
+        ctx.require_clean_tree()?;
 
         let original_branch = ctx.git.current_branch()?;
 

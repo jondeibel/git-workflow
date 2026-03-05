@@ -83,6 +83,7 @@ impl StackConfig {
     /// Validate all branch names in the config.
     pub fn validate(&self) -> Result<()> {
         validate::validate_stack_name(&self.name)?;
+        validate::validate_branch_name(&self.base_branch)?;
         for branch in &self.branches {
             validate::validate_branch_name(&branch.name)?;
         }
