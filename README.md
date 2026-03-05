@@ -69,6 +69,18 @@ gw sync
 gw switch
 ```
 
+## Already have branches? Adopt them
+
+If you've already got a chain of branches you've been managing by hand, you don't need to recreate anything. Just tell gw about them:
+
+```bash
+gw adopt feature-api feature-tests feature-ui --base dev
+```
+
+The argument order defines the stack order, so `feature-api` becomes the root and `feature-ui` becomes the leaf. If the branches aren't already rebased into a chain, gw handles that for you and asks before making changes. You can also name the stack explicitly with `--name` or let it default to the first branch name.
+
+This is the easiest way to migrate onto gw. You keep all your existing branches and commits, gw just starts tracking the relationships between them.
+
 ## Commands
 
 | Command | What it does |
