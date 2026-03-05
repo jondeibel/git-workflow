@@ -8,6 +8,11 @@ use gw::{commands, state};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Completions don't need a git repo
+    if let Commands::Completions(args) = &cli.command {
+        return commands::completions::run(&args.shell);
+    }
+
     let ctx = Ctx::discover()?;
 
     // State guard: block most commands if a propagation is in progress
@@ -15,7 +20,8 @@ fn main() -> Result<()> {
         let allowed = matches!(
             &cli.command,
             Commands::Rebase(args) if args.cont || args.abort
-        ) || matches!(&cli.command, Commands::Tree(_));
+        ) || matches!(&cli.command, Commands::Tree(_))
+            || matches!(&cli.command, Commands::Switch(_));
 
         if !allowed {
             let op = match prop_state.operation {
@@ -39,7 +45,9 @@ fn main() -> Result<()> {
         Commands::Rebase(args) => commands::rebase::run(args, &ctx),
         Commands::Sync(args) => commands::sync::run(args, &ctx),
         Commands::Push(args) => commands::push::run(args, &ctx),
+        Commands::Switch(args) => commands::switch::run(args.branch, &ctx),
         Commands::Tree(args) => commands::tree::run(&ctx, args.pr),
         Commands::Config(args) => commands::config::run(args.command, &ctx),
+        Commands::Completions(_) => unreachable!(),
     }
 }

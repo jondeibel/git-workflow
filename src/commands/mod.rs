@@ -1,8 +1,10 @@
 pub mod adopt;
 pub mod branch;
+pub mod completions;
 pub mod config;
 pub mod push;
 pub mod rebase;
 pub mod stack;
+pub mod switch;
 pub mod sync;
 pub mod tree;
