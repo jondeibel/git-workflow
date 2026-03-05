@@ -23,10 +23,14 @@ pub enum Commands {
     Sync(SyncArgs),
     /// Push the current branch
     Push(PushArgs),
+    /// Switch to a branch tracked by gw
+    Switch(SwitchArgs),
     /// Show tree visualization of all stacks
     Tree(TreeArgs),
     /// Configure gw settings
     Config(ConfigArgs),
+    /// Generate shell completions
+    Completions(CompletionsArgs),
 }
 
 // -- Stack subcommands --
@@ -131,6 +135,14 @@ pub struct PushArgs {
     pub yes: bool,
 }
 
+// -- Switch --
+
+#[derive(Args)]
+pub struct SwitchArgs {
+    /// Branch name to switch to (interactive picker if omitted)
+    pub branch: Option<String>,
+}
+
 // -- Tree --
 
 #[derive(Args)]
@@ -159,4 +171,13 @@ pub enum ConfigCommands {
     },
     /// Show current configuration
     Show,
+}
+
+// -- Completions --
+
+#[derive(Args)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    #[arg(value_parser = ["zsh", "bash", "fish"])]
+    pub shell: String,
 }
