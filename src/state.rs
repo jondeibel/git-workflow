@@ -1,0 +1,265 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+use crate::validate;
+
+/// A single branch entry in a stack. Order in the Vec defines stack position.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BranchEntry {
+    pub name: String,
+}
+
+/// Stack metadata stored in .git/gw/stacks/<name>.toml
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackConfig {
+    pub name: String,
+    pub base_branch: String,
+    /// Ordered list of branches. First = root (closest to base), last = leaf.
+    pub branches: Vec<BranchEntry>,
+}
+
+impl StackConfig {
+    /// Find the index of a branch by name.
+    pub fn branch_index(&self, name: &str) -> Option<usize> {
+        self.branches.iter().position(|b| b.name == name)
+    }
+
+    /// Get the root branch (closest to base).
+    pub fn root_branch(&self) -> Option<&BranchEntry> {
+        self.branches.first()
+    }
+
+    /// Get the leaf branch (furthest from base).
+    pub fn leaf_branch(&self) -> Option<&BranchEntry> {
+        self.branches.last()
+    }
+
+    /// Get the parent branch name for a given branch.
+    /// For the root branch, returns the base_branch.
+    pub fn parent_of(&self, name: &str) -> Option<String> {
+        let idx = self.branch_index(name)?;
+        if idx == 0 {
+            Some(self.base_branch.clone())
+        } else {
+            Some(self.branches[idx - 1].name.clone())
+        }
+    }
+
+    /// Get all descendant branches (everything after the given branch in order).
+    pub fn descendants_of(&self, name: &str) -> Vec<&BranchEntry> {
+        if let Some(idx) = self.branch_index(name) {
+            self.branches[idx + 1..].iter().collect()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Validate all branch names in the config.
+    pub fn validate(&self) -> Result<()> {
+        validate::validate_stack_name(&self.name)?;
+        for branch in &self.branches {
+            validate::validate_branch_name(&branch.name)?;
+        }
+        Ok(())
+    }
+}
+
+/// A ref snapshot for rollback purposes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OriginalRef {
+    pub branch: String,
+    pub commit: String,
+}
+
+/// The type of operation that created this propagation state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    Rebase,
+    Sync,
+    Adopt,
+    BranchRemove,
+}
+
+/// Propagation state tracked in .git/gw/state.toml during multi-branch rebases.
+/// Only exists while a propagation is in progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropagationState {
+    pub operation: Operation,
+    pub stack: String,
+    pub started_at: String,
+    /// The branch the user was on before propagation started.
+    pub original_branch: String,
+    /// Pre-operation refs for full rollback.
+    pub original_refs: Vec<OriginalRef>,
+    /// Branches that have been successfully rebased.
+    pub completed: Vec<String>,
+    /// Branches still to be rebased.
+    pub remaining: Vec<String>,
+    /// The branch currently being rebased (or that hit a conflict).
+    pub current: Option<String>,
+}
+
+/// Write content to a file atomically using temp file + rename.
+pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
+    use std::io::Write;
+    let dir = path
+        .parent()
+        .context("file path has no parent directory")?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create directory {}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .context("failed to create temp file")?;
+    tmp.write_all(content.as_bytes())
+        .context("failed to write to temp file")?;
+    tmp.persist(path)
+        .with_context(|| format!("failed to persist temp file to {}", path.display()))?;
+    Ok(())
+}
+
+/// Load a stack config from a TOML file.
+pub fn load_stack(path: &Path) -> Result<StackConfig> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let config: StackConfig =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    // Validate stored values (defense in depth: files could be hand-edited)
+    config.validate()?;
+    Ok(config)
+}
+
+/// Save a stack config to a TOML file atomically.
+pub fn save_stack(path: &Path, config: &StackConfig) -> Result<()> {
+    let content =
+        toml::to_string_pretty(config).context("failed to serialize stack config")?;
+    atomic_write(path, &content)
+}
+
+/// Load propagation state from state.toml.
+pub fn load_propagation_state(path: &Path) -> Result<Option<PropagationState>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let state: PropagationState = toml::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(Some(state))
+}
+
+/// Save propagation state atomically.
+pub fn save_propagation_state(path: &Path, state: &PropagationState) -> Result<()> {
+    let content =
+        toml::to_string_pretty(state).context("failed to serialize propagation state")?;
+    atomic_write(path, &content)
+}
+
+/// Remove propagation state file.
+pub fn remove_propagation_state(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stack_config_serialization() {
+        let config = StackConfig {
+            name: "auth".to_string(),
+            base_branch: "dev".to_string(),
+            branches: vec![
+                BranchEntry {
+                    name: "feature/auth".to_string(),
+                },
+                BranchEntry {
+                    name: "feature/auth-tests".to_string(),
+                },
+            ],
+        };
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: StackConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.name, "auth");
+        assert_eq!(deserialized.base_branch, "dev");
+        assert_eq!(deserialized.branches.len(), 2);
+        assert_eq!(deserialized.branches[0].name, "feature/auth");
+        assert_eq!(deserialized.branches[1].name, "feature/auth-tests");
+    }
+
+    #[test]
+    fn test_stack_navigation() {
+        let config = StackConfig {
+            name: "auth".to_string(),
+            base_branch: "dev".to_string(),
+            branches: vec![
+                BranchEntry {
+                    name: "auth".to_string(),
+                },
+                BranchEntry {
+                    name: "auth-tests".to_string(),
+                },
+                BranchEntry {
+                    name: "auth-ui".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(config.root_branch().unwrap().name, "auth");
+        assert_eq!(config.leaf_branch().unwrap().name, "auth-ui");
+        assert_eq!(config.parent_of("auth").unwrap(), "dev");
+        assert_eq!(config.parent_of("auth-tests").unwrap(), "auth");
+        assert_eq!(config.parent_of("auth-ui").unwrap(), "auth-tests");
+        assert!(config.parent_of("nonexistent").is_none());
+
+        let descendants = config.descendants_of("auth");
+        assert_eq!(descendants.len(), 2);
+        assert_eq!(descendants[0].name, "auth-tests");
+        assert_eq!(descendants[1].name, "auth-ui");
+
+        let descendants = config.descendants_of("auth-tests");
+        assert_eq!(descendants.len(), 1);
+        assert_eq!(descendants[0].name, "auth-ui");
+
+        let descendants = config.descendants_of("auth-ui");
+        assert_eq!(descendants.len(), 0);
+    }
+
+    #[test]
+    fn test_atomic_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+        atomic_write(&path, "hello = 'world'\n").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "hello = 'world'\n");
+    }
+
+    #[test]
+    fn test_propagation_state_serialization() {
+        let state = PropagationState {
+            operation: Operation::Rebase,
+            stack: "auth".to_string(),
+            started_at: "2026-03-05T14:30:00Z".to_string(),
+            original_branch: "feature/auth".to_string(),
+            original_refs: vec![OriginalRef {
+                branch: "feature/auth-tests".to_string(),
+                commit: "aaa1111".to_string(),
+            }],
+            completed: vec![],
+            remaining: vec!["feature/auth-tests".to_string()],
+            current: Some("feature/auth-tests".to_string()),
+        };
+
+        let serialized = toml::to_string_pretty(&state).unwrap();
+        let deserialized: PropagationState = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.operation, Operation::Rebase);
+        assert_eq!(deserialized.stack, "auth");
+        assert_eq!(deserialized.original_refs.len(), 1);
+    }
+}

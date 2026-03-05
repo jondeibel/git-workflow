@@ -1,0 +1,144 @@
+use anyhow::{Context, Result};
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use crate::git::Git;
+use crate::state::{self, PropagationState, StackConfig};
+
+/// Central context passed to all command handlers.
+/// Bundles the Git instance, resolved gw paths, and provides
+/// methods for loading/saving stack metadata.
+pub struct Ctx {
+    pub git: Git,
+    pub gw_dir: PathBuf,
+    pub stacks_dir: PathBuf,
+    state_path: PathBuf,
+}
+
+impl Ctx {
+    /// Discover the git repo and set up gw paths.
+    pub fn discover() -> Result<Self> {
+        let git = Git::discover()?;
+        let gw_dir = git.repo_path().join(".git").join("gw");
+        let stacks_dir = gw_dir.join("stacks");
+        let state_path = gw_dir.join("state.toml");
+        Ok(Self {
+            git,
+            gw_dir,
+            stacks_dir,
+            state_path,
+        })
+    }
+
+    /// Ensure .git/gw/ and .git/gw/stacks/ directories exist.
+    pub fn ensure_dirs(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.stacks_dir)
+            .with_context(|| format!("failed to create {}", self.stacks_dir.display()))
+    }
+
+    /// Load a stack by name.
+    pub fn load_stack(&self, name: &str) -> Result<StackConfig> {
+        let path = self.stacks_dir.join(format!("{name}.toml"));
+        state::load_stack(&path)
+    }
+
+    /// Save a stack config.
+    pub fn save_stack(&self, config: &StackConfig) -> Result<()> {
+        self.ensure_dirs()?;
+        let path = self.stacks_dir.join(format!("{}.toml", config.name));
+
+        // Verify the resolved path is actually under stacks_dir (path traversal defense)
+        let canonical_stacks = self.stacks_dir.canonicalize().unwrap_or(self.stacks_dir.clone());
+        if let Ok(canonical_path) = path.canonicalize() {
+            if !canonical_path.starts_with(&canonical_stacks) {
+                anyhow::bail!(
+                    "Stack name would write outside of {}: refusing",
+                    self.stacks_dir.display()
+                );
+            }
+        }
+
+        state::save_stack(&path, config)
+    }
+
+    /// Delete a stack's TOML file.
+    pub fn delete_stack(&self, name: &str) -> Result<()> {
+        let path = self.stacks_dir.join(format!("{name}.toml"));
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Check if a stack exists.
+    pub fn stack_exists(&self, name: &str) -> bool {
+        self.stacks_dir.join(format!("{name}.toml")).exists()
+    }
+
+    /// Load all stacks from .git/gw/stacks/*.toml
+    pub fn load_all_stacks(&self) -> Result<Vec<StackConfig>> {
+        if !self.stacks_dir.exists() {
+            return Ok(vec![]);
+        }
+
+        let mut stacks = Vec::new();
+        let entries = std::fs::read_dir(&self.stacks_dir)
+            .with_context(|| format!("failed to read {}", self.stacks_dir.display()))?;
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                match state::load_stack(&path) {
+                    Ok(config) => stacks.push(config),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: failed to load {}: {e}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(stacks)
+    }
+
+    /// Find which stack contains the given branch name.
+    pub fn find_stack_for_branch(&self, branch: &str) -> Result<Option<StackConfig>> {
+        let stacks = self.load_all_stacks()?;
+        Ok(stacks
+            .into_iter()
+            .find(|s| s.branch_index(branch).is_some()))
+    }
+
+    /// Load propagation state if it exists.
+    pub fn propagation_state(&self) -> Result<Option<PropagationState>> {
+        state::load_propagation_state(&self.state_path)
+    }
+
+    /// Save propagation state.
+    pub fn save_propagation_state(&self, ps: &PropagationState) -> Result<()> {
+        self.ensure_dirs()?;
+        state::save_propagation_state(&self.state_path, ps)
+    }
+
+    /// Remove propagation state.
+    pub fn remove_propagation_state(&self) -> Result<()> {
+        state::remove_propagation_state(&self.state_path)
+    }
+
+    /// Validate that tracked branches still exist in git.
+    /// Returns a set of missing branch names.
+    pub fn validate_branches(&self, stack: &StackConfig) -> Result<HashSet<String>> {
+        let existing = self.git.all_local_branches()?;
+        let mut missing = HashSet::new();
+        for branch in &stack.branches {
+            if !existing.contains(&branch.name) {
+                missing.insert(branch.name.clone());
+            }
+        }
+        Ok(missing)
+    }
+}

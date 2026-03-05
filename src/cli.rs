@@ -1,0 +1,133 @@
+use clap::{Args, Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "gw", version, about = "Git stacked branch manager")]
+#[command(propagate_version = true)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+
+    /// Show verbose output (git commands being run)
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Manage stacks
+    Stack(StackArgs),
+    /// Manage branches within a stack
+    Branch(BranchArgs),
+    /// Adopt existing branches into a stack
+    Adopt(AdoptArgs),
+    /// Propagate rebases to descendant branches
+    Rebase(RebaseArgs),
+    /// Sync stacks with the base branch
+    Sync(SyncArgs),
+    /// Push the current branch
+    Push(PushArgs),
+    /// Show tree visualization of all stacks
+    Tree,
+}
+
+// -- Stack subcommands --
+
+#[derive(Args)]
+#[command(flatten_help = true)]
+pub struct StackArgs {
+    #[command(subcommand)]
+    pub command: StackCommands,
+}
+
+#[derive(Subcommand)]
+pub enum StackCommands {
+    /// Create a new stack
+    Create {
+        /// Name for the stack (also creates a branch with this name)
+        name: String,
+        /// Base branch to stack off of (defaults to current branch)
+        #[arg(long)]
+        base: Option<String>,
+    },
+    /// Delete a stack (branches are NOT deleted)
+    Delete {
+        /// Stack name to delete
+        name: String,
+    },
+    /// List all stacks
+    List,
+}
+
+// -- Branch subcommands --
+
+#[derive(Args)]
+#[command(flatten_help = true)]
+pub struct BranchArgs {
+    #[command(subcommand)]
+    pub command: BranchCommands,
+}
+
+#[derive(Subcommand)]
+pub enum BranchCommands {
+    /// Create a new branch in the current stack
+    Create {
+        /// Branch name
+        name: String,
+    },
+    /// Remove a branch from its stack (git branch is NOT deleted)
+    Remove {
+        /// Branch name to remove
+        name: String,
+    },
+}
+
+// -- Adopt --
+
+#[derive(Args)]
+pub struct AdoptArgs {
+    /// Branch names in stack order (first = root, last = leaf)
+    #[arg(required = true)]
+    pub branches: Vec<String>,
+    /// Base branch (inferred from first branch's parent if not specified)
+    #[arg(long)]
+    pub base: Option<String>,
+    /// Stack name (defaults to first branch name)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Skip confirmation prompt
+    #[arg(long)]
+    pub yes: bool,
+}
+
+// -- Rebase --
+
+#[derive(Args)]
+pub struct RebaseArgs {
+    /// Continue after resolving conflicts
+    #[arg(long, name = "continue", conflicts_with = "abort")]
+    pub cont: bool,
+    /// Abort and roll back all branches
+    #[arg(long, conflicts_with = "continue")]
+    pub abort: bool,
+}
+
+// -- Sync --
+
+#[derive(Args)]
+pub struct SyncArgs {
+    /// Only sync a specific stack
+    #[arg(long)]
+    pub stack: Option<String>,
+    /// Manually indicate a branch was merged (when gh is unavailable)
+    #[arg(long)]
+    pub merged: Option<String>,
+}
+
+// -- Push --
+
+#[derive(Args)]
+pub struct PushArgs {
+    /// Skip confirmation prompt for force push
+    #[arg(long)]
+    pub yes: bool,
+}
