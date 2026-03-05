@@ -284,14 +284,13 @@ fn version_flag_works() {
 }
 
 #[test]
-fn no_args_shows_help() {
-    let dir = tempfile::tempdir().unwrap();
-    assert_cmd::Command::cargo_bin("gw")
-        .unwrap()
-        .current_dir(dir.path())
+fn no_args_defaults_to_tree() {
+    // Inside a git repo, `gw` with no args runs `gw tree`
+    let repo = TestRepo::new();
+    gw_cmd(&repo.path)
         .assert()
-        .failure() // clap exits with error when no subcommand given
-        .stderr(predicate::str::contains("Usage"));
+        .success()
+        .stdout(predicate::str::contains("No stacks"));
 }
 
 #[test]
