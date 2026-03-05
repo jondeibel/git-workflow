@@ -42,14 +42,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Stack(args) => commands::stack::run(args.command, &ctx),
-        Commands::Branch(_args) => {
-            ui::info("Branch commands are not yet implemented (Phase 2).");
-            Ok(())
-        }
-        Commands::Adopt(_args) => {
-            ui::info("Adopt is not yet implemented (Phase 2).");
-            Ok(())
-        }
+        Commands::Branch(args) => commands::branch::run(args.command, &ctx),
+        Commands::Adopt(args) => commands::adopt::run(args, &ctx),
         Commands::Rebase(_args) => {
             ui::info("Rebase is not yet implemented (Phase 3).");
             Ok(())
