@@ -6,15 +6,19 @@ You break a big feature into multiple PRs. You push the first one for review, ge
 
 Everything lives in `.git/gw/` and never gets pushed to the remote.
 
-## Why not Graphite, ghstack, or git-branchless
+## Why this exists
 
-**Graphite** requires a cloud account and wraps your workflow through their service. `gw` is local-only with zero external dependencies.
+The core problem is that GitHub's PR workflow assumes branches are independent. When you stack them, you're fighting the tool. Every commit to an upstream branch means manually rebasing everything downstream. Every squash merge means figuring out what landed, removing the merged branch, and rebasing again. The overhead scales with the number of branches in the chain, and it gets painful fast.
 
-**ghstack** rewrites your branches into a format GitHub can display, but what's on your machine doesn't match what's on GitHub. That gets confusing fast.
+Existing tools solve this but they all ask you to give something up.
 
-**git-branchless** reimagines git around changes rather than branches. If your team does one-branch-per-PR and squash-merges into dev, that model doesn't map cleanly.
+**Graphite** is a full platform. It requires a cloud account, wraps your push workflow through their service, and adds a dashboard on top of GitHub. If you're on a team that's bought in, it works great. But if you just want the rebase automation without adding a SaaS dependency to your git workflow, it's a lot of overhead for what should be a local operation.
 
-`gw` is a thin wrapper around git, not a replacement for it. Each branch maps 1:1 to a PR. You push when you're ready. Reviewers see normal diffs. Squash merges get detected automatically.
+**ghstack** takes a fundamentally different approach where it rewrites your branches into a format that GitHub can display as individual PRs. The tradeoff is that what's on your machine doesn't match what's on GitHub. Your local branch has all the commits, but the PR shows a synthetic branch with just the relevant ones. That impedance mismatch gets confusing when you're trying to debug why a rebase went wrong or why a PR diff looks different than what you expect locally.
+
+**git-branchless** is powerful but it's a different mental model entirely. It's inspired by Mercurial and Phabricator, and it reimagines git around changes rather than branches. If your team already does one-branch-per-PR and squash-merges into a base branch, that abstraction doesn't map cleanly to your existing workflow, and you're learning a new way of thinking about git on top of learning the tool.
+
+`gw` is intentionally boring. Your branches are real git branches. Your PRs are normal GitHub PRs. Your reviewers see normal diffs. Nothing gets rewritten, nothing gets synced to a cloud service, and the mental model is the same one you already have. It just automates the tedious parts: propagating rebases through the chain, detecting squash merges, and cleaning up the stack when branches land.
 
 ## Install
 
@@ -49,7 +53,7 @@ gw completions fish | source
 gw mcp-setup
 ```
 
-This writes the MCP config to `.claude/settings.json` in your repo. Restart Claude Code and it can use gw tools natively.
+This writes the MCP config to `.mcp.json` and you're good to go. Restart Claude Code and it can use gw tools natively.
 
 ## Quick start
 
