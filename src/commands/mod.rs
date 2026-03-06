@@ -2,6 +2,7 @@ pub mod adopt;
 pub mod branch;
 pub mod completions;
 pub mod config;
+pub mod diff;
 pub mod mcp_server;
 pub mod mcp_setup;
 pub mod push;

@@ -26,6 +26,8 @@ pub enum Commands {
     Switch(SwitchArgs),
     /// Show status of the current branch in its stack
     Status,
+    /// Show diff for the current branch's changes
+    Diff(DiffArgs),
     /// Show log of all stacks with branches and commits
     #[command(alias = "tree")]
     Log(TreeArgs),
@@ -161,6 +163,18 @@ pub struct TreeArgs {
     /// Show PR status from GitHub (requires gh CLI, adds latency)
     #[arg(long)]
     pub pr: bool,
+}
+
+// -- Diff --
+
+#[derive(Args)]
+pub struct DiffArgs {
+    /// Show diffstat summary instead of full diff
+    #[arg(long)]
+    pub stat: bool,
+    /// Use regular git diff instead of difftastic
+    #[arg(long)]
+    pub no_difftastic: bool,
 }
 
 // -- Config --
