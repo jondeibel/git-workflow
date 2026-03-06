@@ -40,7 +40,7 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
         // Fetch and update base branch (once per unique base)
         if synced_bases.insert(base.clone()) {
             ui::info(&format!("Fetching {base}..."));
-            match ctx.git.fetch_branch("origin", base) {
+            match ctx.git.run(&["fetch", "--prune", "origin", base]) {
                 Ok(_) => {
                     if let Err(e) = ctx.git.update_local_ref(base, &format!("origin/{base}")) {
                         ui::warn(&format!("Could not update local ref for {base}: {e}"));
@@ -95,10 +95,10 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
 
                 if stack.branches.is_empty() {
                     ui::info(&format!(
-                        "All branches in stack '{}' have been merged!",
+                        "All branches in stack '{}' have been merged! Cleaning up stack.",
                         stack.name
                     ));
-                    ctx.save_stack(&stack)?;
+                    ctx.delete_stack(&stack.name)?;
                     break;
                 }
 
