@@ -36,7 +36,8 @@ fn main() -> Result<()> {
             &command,
             Commands::Rebase(args) if args.cont || args.abort
         ) || matches!(&command, Commands::Log(_))
-            || matches!(&command, Commands::Switch(_));
+            || matches!(&command, Commands::Switch(_))
+            || matches!(&command, Commands::Status);
 
         if !allowed {
             let op = match prop_state.operation {
@@ -54,6 +55,7 @@ fn main() -> Result<()> {
     }
 
     match command {
+        Commands::Status => commands::status::run(&ctx),
         Commands::Stack(args) => commands::stack::run(args.command, &ctx),
         Commands::Branch(args) => commands::branch::run(args.command, &ctx),
         Commands::Adopt(args) => commands::adopt::run(args, &ctx),

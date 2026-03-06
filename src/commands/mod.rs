@@ -7,6 +7,7 @@ pub mod mcp_setup;
 pub mod push;
 pub mod rebase;
 pub mod stack;
+pub mod status;
 pub mod switch;
 pub mod sync;
 pub mod tree;
