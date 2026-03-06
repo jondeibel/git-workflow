@@ -131,8 +131,13 @@ impl GwServer {
         gw(&["sync", "--merged", &branch]).unwrap_or_else(|e| format!("{e}"))
     }
 
-    #[tool(description = "Push the current branch (force-with-lease if diverged)")]
+    #[tool(description = "Push the current branch. Will fail if the branch has diverged and needs a force push. Use gw_force_push if the user confirms they want to force push.")]
     fn gw_push(&self) -> String {
+        gw(&["push"]).unwrap_or_else(|e| format!("{e}"))
+    }
+
+    #[tool(description = "Force push the current branch with lease. Only use this after the user has explicitly confirmed they want to force push.")]
+    fn gw_force_push(&self) -> String {
         gw(&["push", "--yes"]).unwrap_or_else(|e| format!("{e}"))
     }
 }
