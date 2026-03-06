@@ -1,15 +1,35 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 
 use crate::ui;
 
-pub fn run(global: bool) -> Result<()> {
+pub fn run() -> Result<()> {
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        bail!("mcp-setup requires an interactive terminal.");
+    }
+
     let gw_path = find_gw()?;
+
+    // Ask the user where to install
+    println!("Where should the MCP server be configured?\n");
+    println!("  1) This project (.mcp.json in repo root)");
+    println!("  2) Globally (~/.mcp.json for all projects)");
+    println!();
+
+    let global = loop {
+        eprint!("Choice [1/2]: ");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        match input.trim() {
+            "1" => break false,
+            "2" => break true,
+            _ => eprintln!("Please enter 1 or 2."),
+        }
+    };
 
     let mcp_path = if global {
         PathBuf::from(std::env::var("HOME").context("HOME not set")?).join(".mcp.json")
     } else {
-        // Project-level: use git root or current directory
         let git_root = std::process::Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
             .output()
