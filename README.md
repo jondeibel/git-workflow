@@ -41,13 +41,23 @@ Your branches are real git branches. Your PRs are normal GitHub PRs. Nothing get
 
 ## Install
 
-```
-git clone https://github.com/jondeibel/git-workflow.git
-cd git-workflow
-cargo install --path .
+```bash
+brew install jondeibel/tap/gw
 ```
 
-Needs a [Rust toolchain](https://rustup.rs/). Optional: `gh` CLI for auto-detecting squash merges and showing PR status in `gw log`.
+Or with the install script:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/jondeibel/git-workflow/releases/latest/download/gw-installer.sh | sh
+```
+
+Or build from source (needs a [Rust toolchain](https://rustup.rs/)):
+
+```bash
+cargo install --git https://github.com/jondeibel/git-workflow.git
+```
+
+Optional: `gh` CLI for auto-detecting squash merges and showing PR status in `gw log`.
 
 ### Shell completions
 
