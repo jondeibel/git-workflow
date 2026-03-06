@@ -68,13 +68,12 @@ gw completions fish | source
 
 The fastest way to get gw working with Claude Code. The plugin installs the MCP server and a skill that teaches Claude when to use gw instead of raw git.
 
-```bash
-# Add the gw marketplace (one time)
-/plugin marketplace add jondeibel/git-workflow
+In Claude Code:
 
-# Install the plugin
-/plugin install gw@git-workflow
-```
+1. Run `/plugin` and select **Manage marketplaces** > **Add marketplace**
+2. Enter `jondeibel/git-workflow`
+3. Run `/plugin` and select **Install a plugin**
+4. Select `gw@git-workflow`
 
 Restart Claude Code and you're good to go. Claude will automatically use gw tools for branch management, pushing, rebasing, and syncing.
 
