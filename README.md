@@ -10,6 +10,15 @@ Everything lives in `.git/gw/` and never gets pushed to the remote.
   <img src="docs/gw-tree.png" alt="gw log output showing three stacks with branches and commits" width="640">
 </p>
 
+## Table of contents
+
+- [Why this exists](#why-this-exists)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Already have branches? Adopt them](#already-have-branches-adopt-them)
+- [Configuration](#configuration)
+- [Commands](#commands)
+
 ## Why this exists
 
 The core problem is that GitHub's PR workflow assumes branches are independent. When you stack them, you're fighting the tool. Every commit to an upstream branch means manually rebasing everything downstream. Every squash merge means figuring out what landed, removing the merged branch, and rebasing again. The overhead scales with the number of branches in the chain, and it gets painful fast.
@@ -106,6 +115,21 @@ The argument order defines the stack order, so `feature-api` becomes the root an
 
 This is the easiest way to migrate onto gw. You keep all your existing branches and commits, gw just starts tracking the relationships between them.
 
+## Configuration
+
+Config lives in `.git/gw/config.toml` and is per-repo. View it with `gw config show`.
+
+| Setting | Default | Command | Description |
+| --- | --- | --- | --- |
+| `default_base` | auto-detected | `gw config set-base <branch>` | Base branch for new stacks (e.g. `dev`, `main`) |
+| `delete_on_merge` | `false` | `gw config set-delete-on-merge true` | Delete local branches after sync detects they were merged |
+
+By default, `gw sync` removes merged branches from the stack but keeps the local git branches around in case you need them. If you'd rather have sync clean everything up automatically:
+
+```bash
+gw config set-delete-on-merge true
+```
+
 ## Commands
 
 | Command | What it does |
@@ -128,5 +152,7 @@ This is the easiest way to migrate onto gw. You keep all your existing branches 
 | `gw push` | Push the current branch |
 | `gw switch [branch]` | Switch branches interactively or by name |
 | `gw config set-base <branch>` | Set the default base branch |
+| `gw config set-delete-on-merge <bool>` | Auto-delete local branches on merge |
 | `gw config show` | Show current configuration |
 | `gw completions <shell>` | Generate shell completions (zsh/bash/fish) |
+| `gw mcp-setup` | Configure the MCP server for Claude Code |

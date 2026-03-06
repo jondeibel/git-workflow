@@ -178,6 +178,13 @@ pub enum ConfigCommands {
         /// Branch name to use as the default base
         branch: String,
     },
+    /// Set whether to delete local branches after they're merged
+    #[command(name = "set-delete-on-merge")]
+    SetDeleteOnMerge {
+        /// true or false
+        #[arg(value_parser = ["true", "false"])]
+        value: String,
+    },
     /// Show current configuration
     Show,
 }
