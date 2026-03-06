@@ -7,7 +7,7 @@ pub fn run() -> Result<()> {
     // Find the gw binary itself (the MCP server is a subcommand)
     let gw_path = find_gw()?;
 
-    // Find or create .claude/settings.json in the repo root
+    // Find the repo root for .mcp.json
     let git_root = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -16,30 +16,25 @@ pub fn run() -> Result<()> {
     let root = if git_root.status.success() {
         PathBuf::from(String::from_utf8_lossy(&git_root.stdout).trim())
     } else {
-        // Not in a git repo, use home directory for global config
-        PathBuf::from(std::env::var("HOME").context("HOME not set")?)
+        std::env::current_dir().context("failed to get current directory")?
     };
 
-    let settings_dir = root.join(".claude");
-    let settings_path = settings_dir.join("settings.json");
+    let mcp_path = root.join(".mcp.json");
 
-    std::fs::create_dir_all(&settings_dir)
-        .with_context(|| format!("failed to create {}", settings_dir.display()))?;
-
-    // Load existing settings or start fresh
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)
-            .with_context(|| format!("failed to read {}", settings_path.display()))?;
+    // Load existing .mcp.json or start fresh
+    let mut config: serde_json::Value = if mcp_path.exists() {
+        let content = std::fs::read_to_string(&mcp_path)
+            .with_context(|| format!("failed to read {}", mcp_path.display()))?;
         serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse {}", settings_path.display()))?
+            .with_context(|| format!("failed to parse {}", mcp_path.display()))?
     } else {
         serde_json::json!({})
     };
 
-    // Set up mcpServers.gw pointing to `gw mcp-server`
-    let mcp_servers = settings
+    // Set up mcpServers.gw
+    let mcp_servers = config
         .as_object_mut()
-        .context("settings.json is not an object")?
+        .context(".mcp.json is not an object")?
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
@@ -56,12 +51,12 @@ pub fn run() -> Result<()> {
     );
 
     // Write back
-    let content = serde_json::to_string_pretty(&settings)
-        .context("failed to serialize settings")?;
-    std::fs::write(&settings_path, format!("{content}\n"))
-        .with_context(|| format!("failed to write {}", settings_path.display()))?;
+    let content = serde_json::to_string_pretty(&config)
+        .context("failed to serialize config")?;
+    std::fs::write(&mcp_path, format!("{content}\n"))
+        .with_context(|| format!("failed to write {}", mcp_path.display()))?;
 
-    ui::success(&format!("MCP server configured at {}", settings_path.display()));
+    ui::success(&format!("MCP server configured at {}", mcp_path.display()));
     ui::info(&format!("Command: {} mcp-server", gw_path.display()));
     ui::info("Restart Claude Code to pick up the new MCP server.");
 
@@ -69,7 +64,12 @@ pub fn run() -> Result<()> {
 }
 
 fn find_gw() -> Result<PathBuf> {
-    // Check if gw is on PATH (it should be since we're running it)
+    // Fall back to current executable path first (most reliable)
+    if let Ok(exe) = std::env::current_exe() {
+        return Ok(exe);
+    }
+
+    // Check PATH
     if let Ok(output) = std::process::Command::new("which").arg("gw").output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -77,11 +77,6 @@ fn find_gw() -> Result<PathBuf> {
                 return Ok(PathBuf::from(path));
             }
         }
-    }
-
-    // Fall back to current executable path
-    if let Ok(exe) = std::env::current_exe() {
-        return Ok(exe);
     }
 
     Ok(PathBuf::from("gw"))
