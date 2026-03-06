@@ -9,6 +9,7 @@ use crate::validate;
 pub fn run(cmd: ConfigCommands, ctx: &Ctx) -> Result<()> {
     match cmd {
         ConfigCommands::SetBase { branch } => set_base(ctx, &branch),
+        ConfigCommands::SetDeleteOnMerge { value } => set_delete_on_merge(ctx, &value),
         ConfigCommands::Show => show(ctx),
     }
 }
@@ -26,6 +27,21 @@ fn set_base(ctx: &Ctx, branch: &str) -> Result<()> {
 
     ui::success(&format!("Default base branch set to '{branch}'."));
     ui::info("New stacks will use this as the base unless --base is specified.");
+
+    Ok(())
+}
+
+fn set_delete_on_merge(ctx: &Ctx, value: &str) -> Result<()> {
+    let enabled = value == "true";
+    let mut config = ctx.load_config()?;
+    config.delete_on_merge = Some(enabled);
+    ctx.save_config(&config)?;
+
+    if enabled {
+        ui::success("Merged branches will be deleted on sync.");
+    } else {
+        ui::success("Merged branches will be kept on sync.");
+    }
 
     Ok(())
 }
@@ -49,6 +65,17 @@ fn show(ctx: &Ctx) -> Result<()> {
             );
         }
     }
+
+    println!();
+
+    let delete_on_merge = config.should_delete_on_merge();
+    let label = if delete_on_merge { "true" } else { "false" };
+    let suffix = if config.delete_on_merge.is_none() {
+        format!(" {}", "(default)".dimmed())
+    } else {
+        String::new()
+    };
+    println!("  delete on merge: {}{suffix}", label.cyan());
 
     Ok(())
 }

@@ -9,6 +9,15 @@ use crate::validate;
 pub struct GwConfig {
     /// Default base branch for new stacks (e.g., "dev", "main")
     pub default_base: Option<String>,
+    /// Whether to delete local branches after sync detects they were merged.
+    /// Defaults to true when not set.
+    pub delete_on_merge: Option<bool>,
+}
+
+impl GwConfig {
+    pub fn should_delete_on_merge(&self) -> bool {
+        self.delete_on_merge.unwrap_or(false)
+    }
 }
 
 /// Load gw config from a TOML file. Returns default if file doesn't exist.

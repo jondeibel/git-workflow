@@ -10,23 +10,34 @@ Everything lives in `.git/gw/` and never gets pushed to the remote.
   <img src="docs/gw-tree.png" alt="gw log output showing three stacks with branches and commits" width="640">
 </p>
 
+## Table of contents
+
+- [Why this exists](#why-this-exists)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Already have branches? Adopt them](#already-have-branches-adopt-them)
+- [Configuration](#configuration)
+- [Commands](#commands)
+
 ## Why this exists
 
-The core problem is that GitHub's PR workflow assumes branches are independent. When you stack them, you're fighting the tool. Every commit to an upstream branch means manually rebasing everything downstream. Every squash merge means figuring out what landed, removing the merged branch, and rebasing again. The overhead scales with the number of branches in the chain, and it gets painful fast.
+If you stack branches, you know the pain. You update a branch in the middle of the chain and now you have to rebase everything after it. A PR gets squash-merged and you have to figure out what landed, remove the branch, and rebase the rest. It's all manual, it's error-prone, and it scales with the number of branches in the chain.
 
-There's also a subtler problem that most stacking tools ignore: force pushing. When a tool automatically rebases your stack onto the latest base branch, every branch in the chain gets new SHAs and needs a force push. GitHub treats force pushes poorly in reviews. Your reviewer's "viewed" state resets, inline comments get orphaned, and the diff becomes harder to follow because GitHub can't cleanly track what changed between the old and new versions of a force-pushed branch. If you're stacking PRs to make review easier, a tool that force pushes your whole stack every time someone merges to main is actively working against that goal.
+There's also the force push problem. Most stacking tools auto-rebase your entire stack onto the latest base branch when you sync. Every branch gets new SHAs and needs a force push. GitHub resets your reviewer's "viewed" state on force pushes, orphans inline comments, and loses the ability to show what changed between review rounds. So you end up making review harder in the name of keeping your stack up to date.
 
-Existing tools solve the rebase automation but they all ask you to give something up.
+### Alternatives
 
-**Graphite** is a full platform. It requires a cloud account, wraps your push workflow through their service, and adds a dashboard on top of GitHub. If you're on a team that's bought in, it works great. But if you just want the rebase automation without adding a SaaS dependency to your git workflow, it's a lot of overhead for what should be a local operation.
+**Graphite** has both a cloud platform and a local CLI. The local tool works but you end up working around its assumptions about how your workflow should look, and the cloud features keep pulling you toward their platform for the full experience.
 
-**ghstack** takes a fundamentally different approach where it rewrites your branches into a format that GitHub can display as individual PRs. The tradeoff is that what's on your machine doesn't match what's on GitHub. Your local branch has all the commits, but the PR shows a synthetic branch with just the relevant ones. That impedance mismatch gets confusing when you're trying to debug why a rebase went wrong or why a PR diff looks different than what you expect locally.
+**ghstack** rewrites your branches into synthetic ones for GitHub to display as individual PRs. What's on your machine doesn't match what's on GitHub, and that gets confusing when you're debugging a rebase or a PR diff doesn't look like what you see locally.
 
-**git-branchless** is powerful but it's a different mental model entirely. It's inspired by Mercurial and Phabricator, and it reimagines git around changes rather than branches. If your team already does one-branch-per-PR and squash-merges into a base branch, that abstraction doesn't map cleanly to your existing workflow, and you're learning a new way of thinking about git on top of learning the tool.
+**git-branchless** is close to what you want but the squash merge detection falls over most of the time, which leaves you doing the manual cleanup work anyways. It's also a different mental model entirely, inspired by Mercurial and Phabricator, and if your team already does one-branch-per-PR with squash merges that abstraction doesn't map cleanly.
 
-`gw` is intentionally boring. Your branches are real git branches. Your PRs are normal GitHub PRs. Your reviewers see normal diffs. Nothing gets rewritten, nothing gets synced to a cloud service, and the mental model is the same one you already have. It just automates the tedious parts: propagating rebases through the chain, detecting squash merges, and cleaning up the stack when branches land.
+### What gw does
 
-Critically, `gw sync` does not rebase your stack onto the latest base branch unless a branch was actually merged or you explicitly ask for it with `--rebase`. Your stack stays pinned to the base commit it started from, which means your open PRs don't get force pushed just because someone else merged to main. When you do need to update, you control when that happens.
+Your branches are real git branches. Your PRs are normal GitHub PRs. Nothing gets rewritten and nothing gets synced anywhere. gw just handles propagating rebases through the chain, detecting squash merges, and cleaning up the stack.
+
+`gw sync` does not rebase your stack onto the latest base branch unless a branch was actually merged or you explicitly pass `--rebase`. Your stack stays pinned, your open PRs don't get force pushed because someone else merged to main, and you control when updates happen.
 
 ## Install
 
@@ -106,6 +117,21 @@ The argument order defines the stack order, so `feature-api` becomes the root an
 
 This is the easiest way to migrate onto gw. You keep all your existing branches and commits, gw just starts tracking the relationships between them.
 
+## Configuration
+
+Config lives in `.git/gw/config.toml` and is per-repo. View it with `gw config show`.
+
+| Setting | Default | Command | Description |
+| --- | --- | --- | --- |
+| `default_base` | auto-detected | `gw config set-base <branch>` | Base branch for new stacks (e.g. `dev`, `main`) |
+| `delete_on_merge` | `false` | `gw config set-delete-on-merge true` | Delete local branches after sync detects they were merged |
+
+By default, `gw sync` removes merged branches from the stack but keeps the local git branches around in case you need them. If you'd rather have sync clean everything up automatically:
+
+```bash
+gw config set-delete-on-merge true
+```
+
 ## Commands
 
 | Command | What it does |
@@ -128,5 +154,7 @@ This is the easiest way to migrate onto gw. You keep all your existing branches 
 | `gw push` | Push the current branch |
 | `gw switch [branch]` | Switch branches interactively or by name |
 | `gw config set-base <branch>` | Set the default base branch |
+| `gw config set-delete-on-merge <bool>` | Auto-delete local branches on merge |
 | `gw config show` | Show current configuration |
 | `gw completions <shell>` | Generate shell completions (zsh/bash/fish) |
+| `gw mcp-setup` | Configure the MCP server for Claude Code |

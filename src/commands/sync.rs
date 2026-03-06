@@ -96,6 +96,15 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
                 stack.branches.remove(0);
                 merged_any = true;
 
+                // Optionally delete the local branch since it's been merged.
+                if ctx.load_config()?.should_delete_on_merge() {
+                    if let Err(e) = ctx.git.run(&["branch", "-D", &root]) {
+                        ui::warn(&format!("Could not delete local branch '{root}': {e}"));
+                    } else {
+                        ui::info(&format!("Deleted local branch '{root}'"));
+                    }
+                }
+
                 if stack.branches.is_empty() {
                     ui::info(&format!(
                         "All branches in stack '{}' have been merged! Cleaning up stack.",
