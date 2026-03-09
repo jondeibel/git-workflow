@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use colored::Colorize;
 
 use crate::context::Ctx;
+use crate::git::Git;
 
 pub fn run(ctx: &Ctx) -> Result<()> {
     let current = ctx.git.current_branch()?;
@@ -27,22 +28,42 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     let is_root = idx == 0;
     let is_leaf = idx == total - 1;
 
-    // Gather git info
-    let merge_base = ctx.git.merge_base(&parent, &current)?;
-    let commits = ctx.git.log_oneline(&merge_base, "HEAD", 100)?;
-    let behind_parent: usize = ctx
-        .git
-        .run(&["rev-list", "--count", &format!("{merge_base}..{parent}")])
+    // Spawn all git subprocesses at once for maximum parallelism.
+    // status --porcelain dominates (~350ms in large repos); everything else
+    // runs concurrently while we wait for it.
+    let wt_child = ctx.git.spawn(&["status", "--porcelain"])?;
+    let remote_child = ctx.git.spawn(&[
+        "for-each-ref",
+        &format!("--format=%(upstream:short)\t%(upstream:track)"),
+        &format!("refs/heads/{current}"),
+    ])?;
+    let mb_child = ctx.git.spawn(&["merge-base", &parent, &current])?;
+
+    // Collect merge-base first (~22ms), then spawn log + rev-list
+    let merge_base = Git::collect(mb_child)?;
+    let log_child = ctx.git.spawn(&[
+        "log",
+        "--reverse",
+        "--oneline",
+        "--format=%h %s",
+        "--max-count=100",
+        &format!("{merge_base}..HEAD"),
+    ])?;
+    let behind_child = ctx.git.spawn(&[
+        "rev-list",
+        "--count",
+        &format!("{merge_base}..{parent}"),
+    ])?;
+
+    // Collect remaining results (status --porcelain is still running)
+    let commits = parse_log_output(&Git::collect(log_child)?);
+    let behind_parent: usize = Git::collect(behind_child)
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     let needs_rebase = behind_parent > 0;
-
-    // Remote status
-    let remote_status = remote_info(ctx, &current);
-
-    // Working tree
-    let wt = working_tree_info(ctx);
+    let remote_status = parse_remote_output(Git::collect(remote_child).ok());
+    let wt = parse_wt_output(Git::collect(wt_child).ok());
 
     // === Render ===
 
@@ -171,12 +192,10 @@ enum WorkingTree {
     },
 }
 
-fn working_tree_info(ctx: &Ctx) -> WorkingTree {
-    let output = ctx.git.run(&["status", "--porcelain"]);
+fn parse_wt_output(output: Option<String>) -> WorkingTree {
     let output = match output {
-        Ok(o) if o.is_empty() => return WorkingTree::Clean,
-        Ok(o) => o,
-        Err(_) => return WorkingTree::Clean,
+        Some(o) if !o.is_empty() => o,
+        _ => return WorkingTree::Clean,
     };
 
     let mut staged = 0usize;
@@ -217,16 +236,10 @@ enum RemoteStatus {
     NoRemote,
 }
 
-fn remote_info(ctx: &Ctx, branch: &str) -> RemoteStatus {
-    let output = ctx.git.run(&[
-        "for-each-ref",
-        &format!("--format=%(upstream:short)\t%(upstream:track)"),
-        &format!("refs/heads/{branch}"),
-    ]);
-
+fn parse_remote_output(output: Option<String>) -> RemoteStatus {
     let output = match output {
-        Ok(o) => o,
-        Err(_) => return RemoteStatus::NoRemote,
+        Some(o) => o,
+        None => return RemoteStatus::NoRemote,
     };
 
     let parts: Vec<&str> = output.split('\t').collect();
@@ -262,6 +275,19 @@ fn remote_info(ctx: &Ctx, branch: &str) -> RemoteStatus {
     }
 
     RemoteStatus::UpToDate
+}
+
+fn parse_log_output(output: &str) -> Vec<(String, String)> {
+    if output.is_empty() {
+        return vec![];
+    }
+    output
+        .lines()
+        .map(|line| {
+            let (sha, subject) = line.split_once(' ').unwrap_or((line, ""));
+            (sha.to_string(), subject.to_string())
+        })
+        .collect()
 }
 
 fn parse_count_after(s: &str, prefix: &str) -> usize {

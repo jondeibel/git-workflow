@@ -87,6 +87,36 @@ impl Git {
         Ok(stdout.trim().to_string())
     }
 
+    /// Spawn a git command without waiting for it to finish.
+    /// Call `collect()` on the returned `Child` to get the result.
+    pub fn spawn(&self, args: &[&str]) -> Result<std::process::Child> {
+        Command::new("git")
+            .args(args)
+            .current_dir(&self.repo_path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("failed to spawn git {}", args.first().unwrap_or(&"")))
+    }
+
+    /// Collect the output of a spawned git command.
+    pub fn collect(child: std::process::Child) -> Result<String> {
+        let output = child
+            .wait_with_output()
+            .context("failed to wait for git process")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("git command failed: {}", stderr.trim()));
+        }
+
+        let stdout =
+            String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
+        Ok(stdout.trim().to_string())
+    }
+
     /// Run a git command and return the raw output, regardless of exit code.
     fn run_raw(&self, args: &[&str]) -> Result<std::process::Output> {
         Command::new("git")
