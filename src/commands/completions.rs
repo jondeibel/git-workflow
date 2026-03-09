@@ -37,10 +37,14 @@ _gw() {
     'sync:Sync stacks with the base branch'
     'push:Push the current branch'
     'switch:Switch to a branch tracked by gw'
+    'status:Show status of the current branch in its stack'
+    'diff:Show diff for the current branch changes'
     'log:Show log of all stacks with branches and commits'
     'tree:Alias for log'
+    'split:Split a branch into a stack of focused branches'
     'config:Configure gw settings'
     'completions:Generate shell completions'
+    'mcp-setup:Set up the MCP server for Claude Code'
   )
 
   _arguments -C \
@@ -118,13 +122,30 @@ _gw() {
         switch)
           _arguments '1:branch:_gw_branches'
           ;;
+        status)
+          ;;
+        diff)
+          _arguments \
+            '--stat[Show diffstat summary]' \
+            '--no-difftastic[Use regular git diff]'
+          ;;
         log|tree)
           _arguments '--pr[Show PR status]'
+          ;;
+        split)
+          _arguments \
+            '--plan[Plan file]:file:_files' \
+            '--base[Base branch]:branch:_gw_branches' \
+            '--name[Stack name]:name:' \
+            '--yes[Skip confirmation]' \
+            '--continue[Continue after resolving conflicts]' \
+            '--abort[Abort the split]'
           ;;
         config)
           local -a config_commands
           config_commands=(
             'set-base:Set the default base branch'
+            'set-delete-on-merge:Set whether to delete branches after merge'
             'show:Show current configuration'
           )
           _arguments -C \
@@ -135,6 +156,7 @@ _gw() {
             config_args)
               case $words[1] in
                 set-base) _arguments '1:branch:_gw_branches' ;;
+                set-delete-on-merge) _arguments '1:value:(true false)' ;;
               esac
               ;;
           esac
@@ -166,10 +188,10 @@ _gw() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="stack branch adopt rebase sync push switch log tree config completions"
+  local commands="stack branch adopt rebase sync push switch status diff log tree split config completions mcp-setup"
   local stack_commands="create delete list"
   local branch_commands="create remove"
-  local config_commands="set-base show"
+  local config_commands="set-base set-delete-on-merge show"
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -227,14 +249,31 @@ _gw() {
     switch)
       COMPREPLY=($(compgen -W "$(_gw_branches)" -- "$cur"))
       ;;
-    tree)
+    diff)
+      COMPREPLY=($(compgen -W "--stat --no-difftastic" -- "$cur"))
+      ;;
+    log|tree)
       COMPREPLY=($(compgen -W "--pr" -- "$cur"))
+      ;;
+    split)
+      if [[ "$prev" == "--plan" ]]; then
+        COMPREPLY=($(compgen -f -- "$cur"))
+      elif [[ "$prev" == "--base" ]]; then
+        COMPREPLY=($(compgen -W "$(_gw_branches)" -- "$cur"))
+      elif [[ "$prev" == "--name" ]]; then
+        :
+      else
+        COMPREPLY=($(compgen -W "--plan --base --name --yes --continue --abort" -- "$cur"))
+      fi
       ;;
     config)
       if [[ $cword -eq 2 ]]; then
         COMPREPLY=($(compgen -W "$config_commands" -- "$cur"))
-      elif [[ "${words[2]}" == "set-base" ]]; then
-        COMPREPLY=($(compgen -W "$(_gw_branches)" -- "$cur"))
+      elif [[ $cword -ge 3 ]]; then
+        case "${words[2]}" in
+          set-base) COMPREPLY=($(compgen -W "$(_gw_branches)" -- "$cur")) ;;
+          set-delete-on-merge) COMPREPLY=($(compgen -W "true false" -- "$cur")) ;;
+        esac
       fi
       ;;
     completions)
@@ -280,10 +319,14 @@ complete -c gw -f -n __gw_needs_command -a rebase -d 'Propagate rebases'
 complete -c gw -f -n __gw_needs_command -a sync -d 'Sync with base branch'
 complete -c gw -f -n __gw_needs_command -a push -d 'Push current branch'
 complete -c gw -f -n __gw_needs_command -a switch -d 'Switch branches'
+complete -c gw -f -n __gw_needs_command -a status -d 'Show status of current branch'
+complete -c gw -f -n __gw_needs_command -a diff -d 'Show diff for current branch'
 complete -c gw -f -n __gw_needs_command -a log -d 'Show stacks'
 complete -c gw -f -n __gw_needs_command -a tree -d 'Alias for log'
+complete -c gw -f -n __gw_needs_command -a split -d 'Split branch into a stack'
 complete -c gw -f -n __gw_needs_command -a config -d 'Configure settings'
 complete -c gw -f -n __gw_needs_command -a completions -d 'Generate completions'
+complete -c gw -f -n __gw_needs_command -a mcp-setup -d 'Set up MCP server for Claude Code'
 
 # stack subcommands
 complete -c gw -f -n '__gw_using_command stack' -a create -d 'Create a new stack'
@@ -318,14 +361,28 @@ complete -c gw -f -n '__gw_using_command push' -l yes -d 'Skip confirmation'
 # switch
 complete -c gw -f -n '__gw_using_command switch' -a '(__gw_branches)'
 
+# diff
+complete -c gw -f -n '__gw_using_command diff' -l stat -d 'Show diffstat summary'
+complete -c gw -f -n '__gw_using_command diff' -l no-difftastic -d 'Use regular git diff'
+
 # tree
 complete -c gw -f -n '__gw_using_command log' -l pr -d 'Show PR status'
 complete -c gw -f -n '__gw_using_command tree' -l pr -d 'Show PR status'
 
+# split
+complete -c gw -f -n '__gw_using_command split' -l plan -d 'Plan file' -rF
+complete -c gw -f -n '__gw_using_command split' -l base -d 'Base branch' -ra '(__gw_branches)'
+complete -c gw -f -n '__gw_using_command split' -l name -d 'Stack name'
+complete -c gw -f -n '__gw_using_command split' -l yes -d 'Skip confirmation'
+complete -c gw -f -n '__gw_using_command split' -l continue -d 'Continue after conflicts'
+complete -c gw -f -n '__gw_using_command split' -l abort -d 'Abort the split'
+
 # config
 complete -c gw -f -n '__gw_using_command config' -a set-base -d 'Set default base branch'
+complete -c gw -f -n '__gw_using_command config' -a set-delete-on-merge -d 'Set delete on merge'
 complete -c gw -f -n '__gw_using_command config' -a show -d 'Show configuration'
 complete -c gw -f -n '__gw_using_subcommand config set-base' -a '(__gw_branches)'
+complete -c gw -f -n '__gw_using_subcommand config set-delete-on-merge' -a 'true false'
 
 # completions
 complete -c gw -f -n '__gw_using_command completions' -a 'zsh bash fish'
