@@ -84,15 +84,24 @@ pub fn run(args: AdoptArgs, ctx: &Ctx) -> Result<()> {
         }
 
         let original_branch = ctx.git.current_branch()?;
+        let total = args.branches.len();
+
+        ui::info(&format!(
+            "Rebasing {total} branch{} into a chain...",
+            if total == 1 { "" } else { "es" }
+        ));
 
         // Rebase each branch onto the previous one
         // First branch rebases onto base, second onto first, etc.
         let mut onto = base_branch.clone();
-        for name in &args.branches {
+        for (i, name) in args.branches.iter().enumerate() {
             ctx.git.checkout(name)?;
             match ctx.git.rebase(&onto)? {
-                crate::git::RebaseResult::Success => {}
+                crate::git::RebaseResult::Success => {
+                    ui::step_ok(i + 1, total, &format!("Rebased '{name}' onto '{onto}'"));
+                }
                 crate::git::RebaseResult::Conflict => {
+                    ui::step_warn(i + 1, total, &format!("Conflict rebasing '{name}' onto '{onto}'"));
                     ctx.git.rebase_abort()?;
                     ctx.git.checkout(&original_branch)?;
                     bail!(
@@ -105,7 +114,6 @@ pub fn run(args: AdoptArgs, ctx: &Ctx) -> Result<()> {
         }
 
         ctx.git.checkout(&original_branch)?;
-        ui::info("Rebased branches into a chain.");
     }
 
     // Create the stack

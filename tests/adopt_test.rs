@@ -108,7 +108,7 @@ fn adopt_unchained_branches_rebases_with_yes() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Rebased branches into a chain"))
+        .stdout(predicate::str::contains("Rebasing 2 branches into a chain"))
         .stdout(predicate::str::contains("Created stack"));
 
     // Verify branch-b is now a descendant of branch-a

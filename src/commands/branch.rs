@@ -95,6 +95,7 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
         let original_branch = ctx.git.current_branch()?;
 
         // Rebase child onto parent
+        ui::info(&format!("Rebasing '{child_name}' onto '{parent}'..."));
         ctx.git.checkout(&child_name)?;
         match ctx.git.rebase(&parent)? {
             crate::git::RebaseResult::Success => {}

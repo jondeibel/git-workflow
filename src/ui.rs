@@ -177,6 +177,32 @@ fn is_less(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Print a step progress line (green, for successful operations).
+pub fn step_ok(current: usize, total: usize, msg: &str) {
+    use colored::Colorize;
+    println!("{} {}", format!("[{current}/{total}]").dimmed(), msg.green());
+}
+
+/// Print a step progress line (dimmed, for no-op/up-to-date).
+pub fn step_skip(current: usize, total: usize, msg: &str) {
+    use colored::Colorize;
+    println!(
+        "{} {}",
+        format!("[{current}/{total}]").dimmed(),
+        msg.dimmed()
+    );
+}
+
+/// Print a step progress line (yellow, for conflicts/warnings).
+pub fn step_warn(current: usize, total: usize, msg: &str) {
+    use colored::Colorize;
+    eprintln!(
+        "{} {}",
+        format!("[{current}/{total}]").dimmed(),
+        msg.yellow()
+    );
+}
+
 /// Print an info message.
 pub fn info(msg: &str) {
     println!("{msg}");

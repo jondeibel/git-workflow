@@ -30,7 +30,9 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
     }
 
     // Prune deleted remote branches
-    let _ = ctx.git.run(&["fetch", "--prune", "origin"]);
+    if let Err(e) = ctx.git.run(&["fetch", "--prune", "origin"]) {
+        ui::warn(&format!("Could not prune remote branches: {e}"));
+    }
 
     // Batch PR status once for all merge detection
     let branch_names: Vec<&str> = stacks
@@ -195,7 +197,9 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
     let still_tracked = ctx.find_stack_for_branch(&original_branch)?.is_some();
     if still_tracked {
         // Our branch is still in a stack, go back to it
-        let _ = ctx.git.checkout(&original_branch);
+        if let Err(e) = ctx.git.checkout(&original_branch) {
+            ui::warn(&format!("Could not switch back to '{original_branch}': {e}"));
+        }
     } else if let Some(ref stack_name) = original_stack_name {
         // Our branch was merged. Check OUR stack specifically for remaining branches.
         let our_stack = ctx.load_stack(stack_name).ok();
@@ -218,7 +222,11 @@ pub fn run(args: SyncArgs, ctx: &Ctx) -> Result<()> {
     } else {
         // Wasn't in any stack, just go to base
         let base = ctx.default_base_branch().unwrap_or_else(|_| "main".to_string());
-        let _ = ctx.git.checkout(&base);
+        if let Err(e) = ctx.git.checkout(&base) {
+            ui::warn(&format!("Could not switch to '{base}': {e}"));
+        } else {
+            ui::info(&format!("Switched to '{base}'"));
+        }
     }
 
     // Delete merged branches now that we've checked out a safe branch.

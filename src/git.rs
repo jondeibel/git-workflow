@@ -236,8 +236,17 @@ impl Git {
     }
 
     /// Continue an in-progress rebase.
+    /// Sets GIT_EDITOR=true to prevent git from opening an editor for the
+    /// commit message, which would block since we capture stdout/stderr.
     pub fn rebase_continue(&self) -> Result<RebaseResult> {
-        let output = self.run_raw(&["rebase", "--continue"])?;
+        let output = Command::new("git")
+            .args(["rebase", "--continue"])
+            .current_dir(&self.repo_path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_EDITOR", "true")
+            .output()
+            .context("failed to execute git rebase --continue")?;
 
         if output.status.success() {
             return Ok(RebaseResult::Success);
@@ -443,8 +452,17 @@ impl Git {
     }
 
     /// Continue an in-progress cherry-pick.
+    /// Sets GIT_EDITOR=true to prevent git from opening an editor for the
+    /// commit message, which would block since we capture stdout/stderr.
     pub fn cherry_pick_continue(&self) -> Result<CherryPickResult> {
-        let output = self.run_raw(&["cherry-pick", "--continue"])?;
+        let output = Command::new("git")
+            .args(["cherry-pick", "--continue"])
+            .current_dir(&self.repo_path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_EDITOR", "true")
+            .output()
+            .context("failed to execute git cherry-pick --continue")?;
 
         if output.status.success() {
             return Ok(CherryPickResult::Success);

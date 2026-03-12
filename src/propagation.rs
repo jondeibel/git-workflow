@@ -76,7 +76,14 @@ pub fn start_with_upstreams(
     ctx.save_propagation_state(&state)?;
 
     // Execute the propagation
-    execute_propagation(ctx, branches_to_rebase, onto_targets, upstream_overrides)
+    execute_propagation(
+        ctx,
+        branches_to_rebase,
+        onto_targets,
+        upstream_overrides,
+        0,
+        branches_to_rebase.len(),
+    )
 }
 
 /// Continue a previously paused propagation.
@@ -93,11 +100,32 @@ pub fn continue_propagation(ctx: &Ctx) -> Result<PropagationResult> {
         );
     }
 
+    let completed_count = state.completed.len();
+    let has_current = state.current.is_some();
+    let remaining_count = state.remaining.len();
+    let total = completed_count + if has_current { 1 } else { 0 } + remaining_count;
+
+    // Show resume context
+    if completed_count > 0 {
+        ui::info(&format!(
+            "Resuming: {} of {} branch{} already rebased",
+            completed_count,
+            total,
+            if total == 1 { "" } else { "es" }
+        ));
+    }
+
     // If a git rebase is in progress, continue it first
     if ctx.git.is_rebase_in_progress() {
+        let current_branch = state.current.clone().unwrap_or_default();
+        let step = completed_count + 1;
         match ctx.git.rebase_continue()? {
             RebaseResult::Success => {
-                // Mark current as completed and proceed
+                ui::step_ok(
+                    step,
+                    total,
+                    &format!("Rebased '{current_branch}' (conflict resolved)"),
+                );
             }
             RebaseResult::Conflict => {
                 // Still conflicting after continue
@@ -109,12 +137,13 @@ pub fn continue_propagation(ctx: &Ctx) -> Result<PropagationResult> {
 
     // Figure out what's left to do
     let remaining = state.remaining.clone();
+    let offset = completed_count + if has_current { 1 } else { 0 };
+
     if remaining.is_empty() {
         // Everything was already done, just clean up
         ctx.remove_propagation_state()?;
-        let count = state.completed.len() + if state.current.is_some() { 1 } else { 0 };
         return Ok(PropagationResult::Success {
-            rebased_count: count,
+            rebased_count: offset,
         });
     }
 
@@ -130,7 +159,12 @@ pub fn continue_propagation(ctx: &Ctx) -> Result<PropagationResult> {
         onto_targets.push(parent);
     }
 
-    execute_propagation(ctx, &remaining, &onto_targets, &[])
+    match execute_propagation(ctx, &remaining, &onto_targets, &[], offset, total)? {
+        PropagationResult::Success { rebased_count } => Ok(PropagationResult::Success {
+            rebased_count: rebased_count + offset,
+        }),
+        conflict => Ok(conflict),
+    }
 }
 
 /// Abort the current propagation and restore all branches.
@@ -161,17 +195,25 @@ pub fn abort(ctx: &Ctx) -> Result<()> {
 }
 
 /// Internal: execute the remaining propagation steps.
+///
+/// `progress_offset` is the number of branches already completed before this call
+/// (used for accurate `[N/total]` display on continue).
+/// `total_branches` is the total number of branches in the full propagation.
 fn execute_propagation(
     ctx: &Ctx,
     branches: &[String],
     onto_targets: &[String],
     upstream_overrides: &[Option<String>],
+    progress_offset: usize,
+    total_branches: usize,
 ) -> Result<PropagationResult> {
     let mut completed_count = 0;
 
     for (i, (branch, onto)) in branches.iter().zip(onto_targets.iter()).enumerate() {
         // Update state BEFORE starting the rebase (crash recovery)
         update_current(ctx, branch, &branches[i + 1..])?;
+
+        let pre_sha = ctx.git.rev_parse(&format!("refs/heads/{branch}"))?;
 
         ctx.git.checkout(branch)?;
 
@@ -182,14 +224,32 @@ fn execute_propagation(
         } else {
             ctx.git.rebase(onto)?
         };
+
+        let step = progress_offset + i + 1;
         match result {
             RebaseResult::Success => {
                 completed_count += 1;
+                let post_sha = ctx.git.rev_parse(&format!("refs/heads/{branch}"))?;
+                if pre_sha == post_sha {
+                    ui::step_skip(
+                        step,
+                        total_branches,
+                        &format!("'{branch}' already up-to-date"),
+                    );
+                } else {
+                    ui::step_ok(
+                        step,
+                        total_branches,
+                        &format!("Rebased '{branch}' onto '{onto}'"),
+                    );
+                }
             }
             RebaseResult::Conflict => {
-                ui::warn(&format!(
-                    "Conflict while rebasing '{branch}' onto '{onto}'."
-                ));
+                ui::step_warn(
+                    step,
+                    total_branches,
+                    &format!("Conflict rebasing '{branch}' onto '{onto}'"),
+                );
                 ui::info("Resolve the conflicts, then run:");
                 ui::info("  git add <resolved files>");
                 ui::info("  gw rebase --continue");

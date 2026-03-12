@@ -304,6 +304,11 @@ pub fn run(args: SplitArgs, ctx: &Ctx) -> Result<()> {
 
     ctx.save_split_state(&split_state)?;
 
+    ui::info(&format!(
+        "Splitting into {} branches...",
+        plan.buckets.len()
+    ));
+
     // Execute the cherry-pick phase
     let result = execute_cherry_picks(ctx, &split_state)?;
     match result {
@@ -333,8 +338,9 @@ enum CherryPickPhaseResult {
 fn execute_cherry_picks(ctx: &Ctx, initial_state: &SplitState) -> Result<CherryPickPhaseResult> {
     let mut created_branches = initial_state.created_branches.clone();
     let base = &initial_state.base_branch;
+    let total_buckets = initial_state.buckets.len();
 
-    for bucket_idx in initial_state.current_bucket_index..initial_state.buckets.len() {
+    for bucket_idx in initial_state.current_bucket_index..total_buckets {
         let bucket = &initial_state.buckets[bucket_idx];
         let start_commit_idx = if bucket_idx == initial_state.current_bucket_index {
             initial_state.current_commit_index
@@ -383,6 +389,18 @@ fn execute_cherry_picks(ctx: &Ctx, initial_state: &SplitState) -> Result<CherryP
                 }
             }
         }
+
+        let step = bucket_idx + 1;
+        let commit_count = bucket.commits.len();
+        ui::step_ok(
+            step,
+            total_buckets,
+            &format!(
+                "Created '{}' ({commit_count} commit{})",
+                bucket.name,
+                if commit_count == 1 { "" } else { "s" }
+            ),
+        );
     }
 
     Ok(CherryPickPhaseResult::Complete { created_branches })
@@ -520,7 +538,9 @@ fn do_abort(ctx: &Ctx) -> Result<()> {
                 if ctx.git.branch_exists(branch).unwrap_or(false) {
                     // Can't delete a checked-out branch, so checkout original first
                     let _ = ctx.git.checkout(&state.original_branch);
-                    let _ = ctx.git.delete_branch(branch);
+                    if let Err(e) = ctx.git.delete_branch(branch) {
+                        ui::warn(&format!("Could not delete branch '{branch}': {e}"));
+                    }
                 }
             }
 
