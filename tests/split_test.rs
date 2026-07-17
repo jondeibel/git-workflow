@@ -1,6 +1,6 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use common::{TestRepo, gw_cmd};
 use predicates::prelude::*;
 use std::fs;
 
@@ -24,7 +24,11 @@ fn full_sha(repo: &TestRepo, refspec: &str) -> String {
 }
 
 /// Create a branch with N commits off the current branch, returning full SHAs.
-fn create_branch_with_commits(repo: &TestRepo, branch: &str, files: &[(&str, &str, &str)]) -> Vec<String> {
+fn create_branch_with_commits(
+    repo: &TestRepo,
+    branch: &str,
+    files: &[(&str, &str, &str)],
+) -> Vec<String> {
     repo.git(&["checkout", "-b", branch]);
     let mut shas = Vec::new();
     for (name, content, msg) in files {
@@ -43,12 +47,16 @@ fn split_untracked_branch_into_two_buckets() {
     let repo = TestRepo::new();
     let main_branch = repo.current_branch();
 
-    let shas = create_branch_with_commits(&repo, "fat-branch", &[
-        ("auth.txt", "auth code", "Add auth"),
-        ("auth-test.txt", "auth tests", "Add auth tests"),
-        ("dash.txt", "dashboard", "Add dashboard"),
-        ("dash-test.txt", "dash tests", "Add dashboard tests"),
-    ]);
+    let shas = create_branch_with_commits(
+        &repo,
+        "fat-branch",
+        &[
+            ("auth.txt", "auth code", "Add auth"),
+            ("auth-test.txt", "auth tests", "Add auth tests"),
+            ("dash.txt", "dashboard", "Add dashboard"),
+            ("dash-test.txt", "dash tests", "Add dashboard tests"),
+        ],
+    );
 
     let plan = format!(
         "pick {} auth\npick {} auth\npick {} dashboard\npick {} dashboard\n",
@@ -138,10 +146,7 @@ fn split_tracked_branch_replaces_in_stack() {
     assert!(toml.contains("name = \"part-two\""));
     // The original "mystack" branch entry should be gone from the branches list
     // (note: the toml file still has name = "mystack" as the stack name)
-    let branch_entries: Vec<&str> = toml
-        .lines()
-        .filter(|l| l.starts_with("name = "))
-        .collect();
+    let branch_entries: Vec<&str> = toml.lines().filter(|l| l.starts_with("name = ")).collect();
     // Stack name + part-one + part-two = 3 lines with "name ="
     assert_eq!(branch_entries.len(), 3);
 }
@@ -189,7 +194,10 @@ fn split_refuses_branch_with_merge_commits() {
     // Merge feature-a into feature-merge (creates a merge commit)
     repo.git(&["merge", "feature-a", "--no-edit"]);
 
-    let plan_path = write_plan(&repo, "pick aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x\npick bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb y\n");
+    let plan_path = write_plan(
+        &repo,
+        "pick aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x\npick bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb y\n",
+    );
 
     gw_cmd(&repo.path)
         .args(["split", "--plan", &plan_path, "--base", &main_branch])
@@ -213,7 +221,10 @@ fn split_refuses_dirty_tree() {
     // Make tree dirty
     fs::write(repo.path.join("dirty.txt"), "dirty").unwrap();
 
-    let plan_path = write_plan(&repo, "pick aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x\npick bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb y\n");
+    let plan_path = write_plan(
+        &repo,
+        "pick aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x\npick bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb y\n",
+    );
 
     gw_cmd(&repo.path)
         .args(["split", "--plan", &plan_path])
@@ -231,10 +242,11 @@ fn split_rejects_plan_with_wrong_commits() {
     let repo = TestRepo::new();
     let main_branch = repo.current_branch();
 
-    create_branch_with_commits(&repo, "branch", &[
-        ("a.txt", "a", "commit a"),
-        ("b.txt", "b", "commit b"),
-    ]);
+    create_branch_with_commits(
+        &repo,
+        "branch",
+        &[("a.txt", "a", "commit a"), ("b.txt", "b", "commit b")],
+    );
 
     // Plan with fake SHAs
     let plan = "pick aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa x\npick bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb y\n";
@@ -256,10 +268,11 @@ fn split_rejects_single_bucket_plan() {
     let repo = TestRepo::new();
     let main_branch = repo.current_branch();
 
-    let shas = create_branch_with_commits(&repo, "branch", &[
-        ("a.txt", "a", "commit a"),
-        ("b.txt", "b", "commit b"),
-    ]);
+    let shas = create_branch_with_commits(
+        &repo,
+        "branch",
+        &[("a.txt", "a", "commit a"), ("b.txt", "b", "commit b")],
+    );
 
     let plan = format!("pick {} only\npick {} only\n", shas[0], shas[1]);
     let plan_path = write_plan(&repo, &plan);
@@ -283,10 +296,11 @@ fn split_rejects_existing_branch_name() {
     // Create a branch named "taken"
     repo.git(&["branch", "taken"]);
 
-    let shas = create_branch_with_commits(&repo, "branch", &[
-        ("a.txt", "a", "commit a"),
-        ("b.txt", "b", "commit b"),
-    ]);
+    let shas = create_branch_with_commits(
+        &repo,
+        "branch",
+        &[("a.txt", "a", "commit a"), ("b.txt", "b", "commit b")],
+    );
 
     let plan = format!("pick {} taken\npick {} other\n", shas[0], shas[1]);
     let plan_path = write_plan(&repo, &plan);
@@ -335,11 +349,15 @@ fn split_abort_cleans_up() {
     let main_branch = repo.current_branch();
 
     // Create a branch with 3 commits
-    let shas = create_branch_with_commits(&repo, "fat", &[
-        ("a.txt", "aaa", "commit a"),
-        ("b.txt", "bbb", "commit b"),
-        ("c.txt", "ccc", "commit c"),
-    ]);
+    let shas = create_branch_with_commits(
+        &repo,
+        "fat",
+        &[
+            ("a.txt", "aaa", "commit a"),
+            ("b.txt", "bbb", "commit b"),
+            ("c.txt", "ccc", "commit c"),
+        ],
+    );
 
     // Create a conflicting file on main that will conflict with commit a's cherry-pick
     repo.git(&["checkout", &main_branch]);
@@ -404,16 +422,25 @@ fn split_custom_stack_name() {
     let repo = TestRepo::new();
     let main_branch = repo.current_branch();
 
-    let shas = create_branch_with_commits(&repo, "fat", &[
-        ("a.txt", "a", "commit a"),
-        ("b.txt", "b", "commit b"),
-    ]);
+    let shas = create_branch_with_commits(
+        &repo,
+        "fat",
+        &[("a.txt", "a", "commit a"), ("b.txt", "b", "commit b")],
+    );
 
     let plan = format!("pick {} part-a\npick {} part-b\n", shas[0], shas[1]);
     let plan_path = write_plan(&repo, &plan);
 
     gw_cmd(&repo.path)
-        .args(["split", "--plan", &plan_path, "--base", &main_branch, "--name", "my-stack"])
+        .args([
+            "split",
+            "--plan",
+            &plan_path,
+            "--base",
+            &main_branch,
+            "--name",
+            "my-stack",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("my-stack"));
@@ -477,13 +504,82 @@ fn split_mid_stack_rebases_descendants() {
     assert!(toml.contains("name = \"leaf\""));
     // "mid" should no longer be in the branches list
     // Count how many branch entries there are
-    let branch_lines: Vec<&str> = toml.lines().filter(|l| l.trim().starts_with("name = ")).collect();
+    let branch_lines: Vec<&str> = toml
+        .lines()
+        .filter(|l| l.trim().starts_with("name = "))
+        .collect();
     // stack name + mystack + mid-part1 + mid-part2 + leaf = 5
-    assert_eq!(branch_lines.len(), 5, "Expected 5 name lines, got: {:?}", branch_lines);
+    assert_eq!(
+        branch_lines.len(),
+        5,
+        "Expected 5 name lines, got: {:?}",
+        branch_lines
+    );
 
     // Verify leaf still has its file (was rebased successfully)
     repo.git(&["checkout", "leaf"]);
     assert!(repo.path.join("leaf.txt").exists());
     assert!(repo.path.join("mid-a.txt").exists());
     assert!(repo.path.join("mid-b.txt").exists());
+}
+
+#[test]
+fn split_abort_during_descendant_propagation_restores_everything() {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "mystack", "--base", &main_branch])
+        .assert()
+        .success();
+    repo.commit_file("root.txt", "root", "root commit");
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "mid"])
+        .assert()
+        .success();
+    repo.commit_file("mid.txt", "mid", "mid commit");
+    let sha_mid = full_sha(&repo, "HEAD");
+    repo.commit_file("shared.txt", "mid-original", "shared original");
+    let sha_shared = full_sha(&repo, "HEAD");
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "leaf"])
+        .assert()
+        .success();
+    repo.commit_file("shared.txt", "leaf", "leaf changes shared");
+    let leaf_before = full_sha(&repo, "leaf");
+    repo.git(&["checkout", "mid"]);
+    repo.commit_file("shared.txt", "mid-new", "mid changes shared");
+    let sha_new = full_sha(&repo, "HEAD");
+
+    let plan = format!(
+        "pick {} mid-part1\npick {} mid-part2\npick {} mid-part2\n",
+        sha_mid, sha_shared, sha_new
+    );
+    let plan_path = write_plan(&repo, &plan);
+    let output = gw_cmd(&repo.path)
+        .args(["split", "--plan", &plan_path])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("gw split --continue"), "{combined}");
+
+    gw_cmd(&repo.path)
+        .args(["split", "--abort"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("metadata restored"));
+
+    assert_eq!(repo.current_branch(), "mid");
+    assert!(!repo.branch_exists("mid-part1"));
+    assert!(!repo.branch_exists("mid-part2"));
+    assert_eq!(full_sha(&repo, "leaf"), leaf_before);
+    let toml = repo.read_stack_toml("mystack");
+    assert!(toml.contains("name = \"mid\""));
+    assert!(toml.contains("name = \"leaf\""));
+    assert!(!toml.contains("mid-part1"));
+    assert!(!repo.state_toml_exists());
 }

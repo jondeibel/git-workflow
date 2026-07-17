@@ -1,6 +1,6 @@
 mod common;
 
-use common::{gw_cmd, simulate_squash_merge, TestRepo};
+use common::{TestRepo, gw_cmd, simulate_squash_merge};
 use predicates::prelude::*;
 
 // ============================================================
@@ -41,7 +41,10 @@ fn sync_merged_removes_root_and_rebases() {
     let toml = repo.read_stack_toml("auth");
     // Count occurrences of [[branches]] - should be 1 (only auth-tests)
     let branch_count = toml.matches("[[branches]]").count();
-    assert_eq!(branch_count, 1, "should have exactly 1 branch, got toml:\n{toml}");
+    assert_eq!(
+        branch_count, 1,
+        "should have exactly 1 branch, got toml:\n{toml}"
+    );
     assert!(toml.contains("name = \"auth-tests\""));
 }
 
@@ -122,7 +125,10 @@ fn sync_all_branches_merged_empties_stack() {
         .args(["sync", "--merged", "auth"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("All branches in stack 'auth' have been merged"));
+        .stdout(predicate::str::contains(
+            "All branches in stack 'auth' have been merged",
+        ));
+    assert!(!repo.stack_toml_exists("auth"));
 }
 
 // ============================================================
@@ -153,17 +159,17 @@ fn sync_detects_merge_via_tree_comparison() {
 
     // Sync without --merged. gh won't be available in test, so it should
     // try tree comparison and detect the merge.
-    let output = gw_cmd(&repo.path)
-        .args(["sync"])
-        .output()
-        .unwrap();
+    let output = gw_cmd(&repo.path).args(["sync"]).output().unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
 
     // It should detect the merge via tree comparison or at minimum sync without error
-    assert!(output.status.success(), "sync should succeed, got: {combined}");
+    assert!(
+        output.status.success(),
+        "sync should succeed, got: {combined}"
+    );
 }
 
 // ============================================================
@@ -191,13 +197,13 @@ fn sync_without_merge_does_not_rebase() {
 
     // Sync should NOT rebase since nothing was merged. The stack stays
     // pinned so the root branch doesn't diverge from its remote PR.
-    gw_cmd(&repo.path)
-        .args(["sync"])
-        .assert()
-        .success();
+    gw_cmd(&repo.path).args(["sync"]).assert().success();
 
     let post_sha = repo.git(&["rev-parse", "feature"]);
-    assert_eq!(pre_sha, post_sha, "feature should NOT be rebased when nothing was merged");
+    assert_eq!(
+        pre_sha, post_sha,
+        "feature should NOT be rebased when nothing was merged"
+    );
 }
 
 // ============================================================
@@ -238,12 +244,18 @@ fn sync_squash_merge_child_rebases_cleanly() {
 
     // feature-child should be rebased onto main and contain its own file
     repo.git(&["checkout", "feature-child"]);
-    assert!(repo.path.join("child.txt").exists(), "child.txt should exist after rebase");
+    assert!(
+        repo.path.join("child.txt").exists(),
+        "child.txt should exist after rebase"
+    );
 
     // The stack should only have feature-child left
     let toml = repo.read_stack_toml("feature");
     let branch_count = toml.matches("[[branches]]").count();
-    assert_eq!(branch_count, 1, "should have exactly 1 branch, got toml:\n{toml}");
+    assert_eq!(
+        branch_count, 1,
+        "should have exactly 1 branch, got toml:\n{toml}"
+    );
     assert!(toml.contains("name = \"feature-child\""));
 }
 
@@ -287,7 +299,10 @@ fn sync_squash_merge_multi_branch_chain_rebases_cleanly() {
 
     // Both remaining branches should have their files
     repo.git(&["checkout", "middle"]);
-    assert!(repo.path.join("middle.txt").exists(), "middle.txt should exist");
+    assert!(
+        repo.path.join("middle.txt").exists(),
+        "middle.txt should exist"
+    );
 
     repo.git(&["checkout", "leaf"]);
     assert!(repo.path.join("leaf.txt").exists(), "leaf.txt should exist");
@@ -296,4 +311,72 @@ fn sync_squash_merge_multi_branch_chain_rebases_cleanly() {
     let toml = repo.read_stack_toml("root");
     let branch_count = toml.matches("[[branches]]").count();
     assert_eq!(branch_count, 2, "should have 2 branches, got toml:\n{toml}");
+}
+
+#[test]
+fn sync_conflict_continue_finishes_metadata_and_checkout() {
+    let repo = start_sync_conflict();
+    std::fs::write(repo.path.join("conflict.txt"), "resolved").unwrap();
+    repo.git(&["add", "conflict.txt"]);
+
+    gw_cmd(&repo.path)
+        .args(["sync", "--continue"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Sync complete"));
+
+    assert!(!repo.state_toml_exists());
+    assert_eq!(repo.current_branch(), "auth-tests");
+    let toml = repo.read_stack_toml("auth");
+    assert_eq!(toml.matches("[[branches]]").count(), 1);
+    assert!(toml.contains("name = \"auth-tests\""));
+}
+
+#[test]
+fn sync_conflict_abort_restores_stack_metadata() {
+    let repo = start_sync_conflict();
+
+    gw_cmd(&repo.path)
+        .args(["sync", "--abort"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("metadata restored"));
+
+    assert!(!repo.state_toml_exists());
+    assert_eq!(repo.current_branch(), "auth-tests");
+    let toml = repo.read_stack_toml("auth");
+    assert!(toml.contains("name = \"auth\""));
+    assert!(toml.contains("name = \"auth-tests\""));
+}
+
+fn start_sync_conflict() -> TestRepo {
+    let repo = TestRepo::new();
+    let main_branch = repo.current_branch();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    repo.commit_file("conflict.txt", "root", "root version");
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "auth-tests"])
+        .assert()
+        .success();
+    repo.commit_file("conflict.txt", "child", "child version");
+    repo.git(&["checkout", &main_branch]);
+    repo.commit_file("conflict.txt", "main", "main version");
+    repo.git(&["checkout", "auth-tests"]);
+
+    let output = gw_cmd(&repo.path)
+        .args(["sync", "--merged", "auth"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("gw sync --continue"), "{combined}");
+    assert!(repo.state_toml_exists());
+    repo
 }

@@ -1,165 +1,138 @@
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::context::Ctx;
 use crate::git::RebaseResult;
-use crate::state::{Operation, OriginalRef, PropagationState};
+use crate::state::{
+    Operation, OriginalRef, PropagationActions, PropagationState, PropagationStep, StackConfig,
+};
 use crate::ui;
 
-/// Result of a propagation attempt.
 pub enum PropagationResult {
-    /// All branches rebased successfully.
     Success { rebased_count: usize },
-    /// A conflict was encountered. State saved for continue/abort.
     Conflict { branch: String },
 }
 
-/// Start a new propagation: rebase a list of branches in order.
-/// Each branch is rebased onto the one before it (or the given base for the first).
-///
-/// `branches_to_rebase` are in topological order (first = child of current, last = leaf).
-/// `onto_targets[i]` is what `branches_to_rebase[i]` should be rebased onto.
-/// `upstream_overrides` optionally provides the old parent for --onto rebases (needed
-/// after squash merges where the old parent's commits are already in the target).
-pub fn start(
-    ctx: &Ctx,
+pub struct PropagationPlan {
     operation: Operation,
-    stack_name: &str,
-    branches_to_rebase: &[String],
-    onto_targets: &[String],
-) -> Result<PropagationResult> {
-    start_with_upstreams(ctx, operation, stack_name, branches_to_rebase, onto_targets, &[])
+    stack_name: String,
+    steps: Vec<PropagationStep>,
+    actions: PropagationActions,
 }
 
-/// Like `start`, but with explicit upstream overrides for --onto rebases.
-pub fn start_with_upstreams(
-    ctx: &Ctx,
-    operation: Operation,
-    stack_name: &str,
-    branches_to_rebase: &[String],
-    onto_targets: &[String],
-    upstream_overrides: &[Option<String>],
-) -> Result<PropagationResult> {
-    if branches_to_rebase.is_empty() {
+impl PropagationPlan {
+    pub fn new(
+        operation: Operation,
+        stack_name: &str,
+        branches: &[String],
+        onto_targets: &[String],
+    ) -> Result<Self> {
+        ensure!(
+            branches.len() == onto_targets.len(),
+            "branches and targets must have same length"
+        );
+        let steps = branches
+            .iter()
+            .zip(onto_targets)
+            .map(|(branch, onto)| PropagationStep {
+                branch: branch.clone(),
+                onto: onto.clone(),
+                upstream: None,
+            })
+            .collect();
+        Ok(Self {
+            operation,
+            stack_name: stack_name.to_string(),
+            steps,
+            actions: PropagationActions::default(),
+        })
+    }
+
+    pub fn with_upstreams(mut self, upstreams: &[Option<String>]) -> Result<Self> {
+        ensure!(
+            upstreams.is_empty() || upstreams.len() == self.steps.len(),
+            "branches and upstreams must have same length"
+        );
+        for (step, upstream) in self.steps.iter_mut().zip(upstreams) {
+            step.upstream = upstream.clone();
+        }
+        Ok(self)
+    }
+
+    pub fn on_success(mut self, checkout: Option<String>, delete_branches: Vec<String>) -> Self {
+        self.actions.success_checkout = checkout;
+        self.actions.success_delete_branches = delete_branches;
+        self
+    }
+
+    pub fn on_abort(
+        mut self,
+        checkout: Option<String>,
+        restore_stack: Option<StackConfig>,
+        delete_stack: Option<String>,
+        delete_branches: Vec<String>,
+    ) -> Self {
+        self.actions.abort_checkout = checkout;
+        self.actions.abort_restore_stack = restore_stack;
+        self.actions.abort_delete_stack = delete_stack;
+        self.actions.abort_delete_branches = delete_branches;
+        self
+    }
+}
+
+pub fn start(ctx: &Ctx, plan: PropagationPlan) -> Result<PropagationResult> {
+    if plan.steps.is_empty() {
         return Ok(PropagationResult::Success { rebased_count: 0 });
     }
 
-    ensure!(
-        branches_to_rebase.len() == onto_targets.len(),
-        "branches and targets must have same length"
-    );
-
     let original_branch = ctx.git.current_branch()?;
-
-    // Collect pre-rebase refs for all branches
-    let original_refs: Vec<OriginalRef> = branches_to_rebase
-        .iter()
-        .map(|b| {
-            let commit = ctx.git.rev_parse(&format!("refs/heads/{b}"))?;
-            Ok(OriginalRef {
-                branch: b.clone(),
-                commit,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    // Write initial state BEFORE starting any rebases
+    let original_refs = snapshot_refs(ctx, &plan.steps)?;
+    let remaining = plan.steps.iter().map(|step| step.branch.clone()).collect();
     let state = PropagationState {
-        operation,
-        stack: stack_name.to_string(),
-        started_at: chrono_now(),
-        original_branch: original_branch.clone(),
+        operation: plan.operation,
+        stack: plan.stack_name,
+        started_at: timestamp(),
+        original_branch,
         original_refs,
         completed: vec![],
-        remaining: branches_to_rebase.to_vec(),
+        remaining,
         current: None,
+        steps: plan.steps.clone(),
+        actions: plan.actions,
     };
     ctx.save_propagation_state(&state)?;
-
-    // Execute the propagation
-    execute_propagation(
-        ctx,
-        branches_to_rebase,
-        onto_targets,
-        upstream_overrides,
-        0,
-        branches_to_rebase.len(),
-    )
+    execute_steps(ctx, &plan.steps, 0, plan.steps.len())
 }
 
-/// Continue a previously paused propagation.
-pub fn continue_propagation(ctx: &Ctx) -> Result<PropagationResult> {
-    let state = ctx
-        .propagation_state()?
-        .context("No propagation in progress.")?;
+pub fn continue_operation(ctx: &Ctx, expected_operation: Operation) -> Result<PropagationResult> {
+    let mut state = load_expected_state(ctx, &expected_operation)?;
+    ensure_conflicts_resolved(ctx, &state.operation)?;
+    show_resume_context(&state);
 
-    // Check for unresolved conflicts
-    if ctx.git.has_unresolved_conflicts()? {
-        bail!(
-            "There are still unresolved conflicts.\n\
-             Resolve them and run `git add`, then `gw rebase --continue`."
-        );
-    }
-
-    let completed_count = state.completed.len();
-    let has_current = state.current.is_some();
-    let remaining_count = state.remaining.len();
-    let total = completed_count + if has_current { 1 } else { 0 } + remaining_count;
-
-    // Show resume context
-    if completed_count > 0 {
-        ui::info(&format!(
-            "Resuming: {} of {} branch{} already rebased",
-            completed_count,
-            total,
-            if total == 1 { "" } else { "es" }
-        ));
-    }
-
-    // If a git rebase is in progress, continue it first
     if ctx.git.is_rebase_in_progress() {
-        let current_branch = state.current.clone().unwrap_or_default();
-        let step = completed_count + 1;
+        let branch = state.current.clone().unwrap_or_default();
+        let step = state.completed.len() + 1;
         match ctx.git.rebase_continue()? {
-            RebaseResult::Success => {
-                ui::step_ok(
-                    step,
-                    total,
-                    &format!("Rebased '{current_branch}' (conflict resolved)"),
-                );
-            }
-            RebaseResult::Conflict => {
-                // Still conflicting after continue
-                let branch = state.current.unwrap_or_default();
-                return Ok(PropagationResult::Conflict { branch });
-            }
+            RebaseResult::Success => ui::step_ok(
+                step,
+                total_steps(&state),
+                &format!("Rebased '{branch}' (conflict resolved)"),
+            ),
+            RebaseResult::Conflict => return Ok(PropagationResult::Conflict { branch }),
         }
     }
 
-    // Figure out what's left to do
-    let remaining = state.remaining.clone();
-    let offset = completed_count + if has_current { 1 } else { 0 };
-
-    if remaining.is_empty() {
-        // Everything was already done, just clean up
-        ctx.remove_propagation_state()?;
+    mark_current_completed(ctx, &mut state)?;
+    let steps = remaining_steps(ctx, &state)?;
+    if steps.is_empty() {
+        finish_success(ctx)?;
         return Ok(PropagationResult::Success {
-            rebased_count: offset,
+            rebased_count: state.completed.len(),
         });
     }
 
-    // Load the stack to determine onto targets for remaining branches
-    let stack = ctx.load_stack(&state.stack)?;
-
-    let mut onto_targets = Vec::new();
-    for branch_name in &remaining {
-        let parent = stack.parent_of(branch_name).context(format!(
-            "Could not find parent for branch '{branch_name}' in stack '{}'",
-            state.stack
-        ))?;
-        onto_targets.push(parent);
-    }
-
-    match execute_propagation(ctx, &remaining, &onto_targets, &[], offset, total)? {
+    let offset = state.completed.len();
+    let total = offset + steps.len();
+    match execute_steps(ctx, &steps, offset, total)? {
         PropagationResult::Success { rebased_count } => Ok(PropagationResult::Success {
             rebased_count: rebased_count + offset,
         }),
@@ -167,128 +140,250 @@ pub fn continue_propagation(ctx: &Ctx) -> Result<PropagationResult> {
     }
 }
 
-/// Abort the current propagation and restore all branches.
-pub fn abort(ctx: &Ctx) -> Result<()> {
+pub fn abort(ctx: &Ctx, expected_operation: Operation) -> Result<()> {
+    let state = load_expected_state(ctx, &expected_operation)?;
+    ctx.git.rebase_abort()?;
+    restore_refs(ctx, &state.original_refs)?;
+    restore_metadata(ctx, &state.actions)?;
+
+    if let Some(branch) = &state.actions.abort_checkout {
+        ctx.git.checkout(branch)?;
+    } else {
+        ctx.git.checkout(&state.original_branch)?;
+    }
+    delete_branches(ctx, &state.actions.abort_delete_branches)?;
+    ctx.remove_propagation_state()?;
+    Ok(())
+}
+
+fn snapshot_refs(ctx: &Ctx, steps: &[PropagationStep]) -> Result<Vec<OriginalRef>> {
+    steps
+        .iter()
+        .map(|step| {
+            let commit = ctx.git.rev_parse(&format!("refs/heads/{}", step.branch))?;
+            Ok(OriginalRef {
+                branch: step.branch.clone(),
+                commit,
+            })
+        })
+        .collect()
+}
+
+fn load_expected_state(ctx: &Ctx, expected: &Operation) -> Result<PropagationState> {
     let state = ctx
         .propagation_state()?
         .context("No propagation in progress.")?;
-
-    // Abort any in-progress git rebase
-    ctx.git.rebase_abort()?;
-
-    // Restore all branches atomically
-    if !state.original_refs.is_empty() {
-        let updates: Vec<(String, String)> = state
-            .original_refs
-            .iter()
-            .map(|r| (r.branch.clone(), r.commit.clone()))
-            .collect();
-        ctx.git.update_ref_transaction(&updates)?;
+    if state.operation == *expected {
+        return Ok(state);
     }
-
-    // Return to original branch
-    let _ = ctx.git.checkout(&state.original_branch);
-
-    ctx.remove_propagation_state()?;
-
-    Ok(())
+    bail!(
+        "A {} operation is in progress. Use `gw {} --continue` or `gw {} --abort`.",
+        state.operation.recovery_command(),
+        state.operation.recovery_command(),
+        state.operation.recovery_command()
+    )
 }
 
-/// Internal: execute the remaining propagation steps.
-///
-/// `progress_offset` is the number of branches already completed before this call
-/// (used for accurate `[N/total]` display on continue).
-/// `total_branches` is the total number of branches in the full propagation.
-fn execute_propagation(
+fn ensure_conflicts_resolved(ctx: &Ctx, operation: &Operation) -> Result<()> {
+    if !ctx.git.has_unresolved_conflicts()? {
+        return Ok(());
+    }
+    let command = operation.recovery_command();
+    bail!(
+        "There are still unresolved conflicts.\n\
+         Resolve them and run `git add`, then `gw {command} --continue`."
+    )
+}
+
+fn show_resume_context(state: &PropagationState) {
+    if state.completed.is_empty() {
+        return;
+    }
+    let completed = state.completed.len();
+    let total = total_steps(state);
+    let suffix = if total == 1 { "" } else { "es" };
+    ui::info(&format!(
+        "Resuming: {completed} of {total} branch{suffix} already rebased"
+    ));
+}
+
+fn total_steps(state: &PropagationState) -> usize {
+    let current_count = usize::from(state.current.is_some());
+    state.completed.len() + current_count + state.remaining.len()
+}
+
+fn mark_current_completed(ctx: &Ctx, state: &mut PropagationState) -> Result<()> {
+    let Some(current) = state.current.take() else {
+        return Ok(());
+    };
+    if !state.completed.contains(&current) {
+        state.completed.push(current);
+    }
+    ctx.save_propagation_state(state)
+}
+
+fn remaining_steps(ctx: &Ctx, state: &PropagationState) -> Result<Vec<PropagationStep>> {
+    if !state.steps.is_empty() {
+        return Ok(state.steps.clone());
+    }
+    let stack = ctx.load_stack(&state.stack)?;
+    state
+        .remaining
+        .iter()
+        .map(|branch| {
+            let onto = stack
+                .parent_of(branch)
+                .with_context(|| format!("Could not find parent for branch '{branch}'"))?;
+            Ok(PropagationStep {
+                branch: branch.clone(),
+                onto,
+                upstream: None,
+            })
+        })
+        .collect()
+}
+
+fn execute_steps(
     ctx: &Ctx,
-    branches: &[String],
-    onto_targets: &[String],
-    upstream_overrides: &[Option<String>],
+    steps: &[PropagationStep],
     progress_offset: usize,
-    total_branches: usize,
+    total_steps: usize,
 ) -> Result<PropagationResult> {
-    let mut completed_count = 0;
-
-    for (i, (branch, onto)) in branches.iter().zip(onto_targets.iter()).enumerate() {
-        // Update state BEFORE starting the rebase (crash recovery)
-        update_current(ctx, branch, &branches[i + 1..])?;
-
-        let pre_sha = ctx.git.rev_parse(&format!("refs/heads/{branch}"))?;
-
-        ctx.git.checkout(branch)?;
-
-        // Use --onto rebase if an upstream override is provided (squash merge case)
-        let upstream = upstream_overrides.get(i).and_then(|o| o.as_deref());
-        let result = if let Some(upstream) = upstream {
-            ctx.git.rebase_onto(onto, upstream)?
-        } else {
-            ctx.git.rebase(onto)?
-        };
-
-        let step = progress_offset + i + 1;
-        match result {
-            RebaseResult::Success => {
-                completed_count += 1;
-                let post_sha = ctx.git.rev_parse(&format!("refs/heads/{branch}"))?;
-                if pre_sha == post_sha {
-                    ui::step_skip(
-                        step,
-                        total_branches,
-                        &format!("'{branch}' already up-to-date"),
-                    );
-                } else {
-                    ui::step_ok(
-                        step,
-                        total_branches,
-                        &format!("Rebased '{branch}' onto '{onto}'"),
-                    );
-                }
-            }
-            RebaseResult::Conflict => {
-                ui::step_warn(
-                    step,
-                    total_branches,
-                    &format!("Conflict rebasing '{branch}' onto '{onto}'"),
-                );
-                ui::info("Resolve the conflicts, then run:");
-                ui::info("  git add <resolved files>");
-                ui::info("  gw rebase --continue");
-                ui::info("");
-                ui::info("Or abort the entire propagation:");
-                ui::info("  gw rebase --abort");
-                return Ok(PropagationResult::Conflict {
-                    branch: branch.clone(),
-                });
-            }
+    let mut rebased_count = 0;
+    for (index, step) in steps.iter().enumerate() {
+        set_current_step(ctx, step, &steps[index + 1..])?;
+        let changed = execute_step(ctx, step)?;
+        let progress = progress_offset + index + 1;
+        if changed {
+            ui::step_ok(
+                progress,
+                total_steps,
+                &format!("Rebased '{}' onto '{}'", step.branch, step.onto),
+            );
+            rebased_count += 1;
+            continue;
         }
+        if !ctx.git.is_rebase_in_progress() {
+            ui::step_skip(
+                progress,
+                total_steps,
+                &format!("'{}' already up-to-date", step.branch),
+            );
+            rebased_count += 1;
+            continue;
+        }
+        show_conflict_guidance(ctx, progress, total_steps, step)?;
+        return Ok(PropagationResult::Conflict {
+            branch: step.branch.clone(),
+        });
     }
-
-    // All done, clean up state
-    ctx.remove_propagation_state()?;
-
-    Ok(PropagationResult::Success {
-        rebased_count: completed_count,
-    })
+    finish_success(ctx)?;
+    Ok(PropagationResult::Success { rebased_count })
 }
 
-/// Update the propagation state file to reflect current progress.
-fn update_current(ctx: &Ctx, current: &str, remaining_after: &[String]) -> Result<()> {
-    if let Some(mut state) = ctx.propagation_state()? {
-        // Move previous current to completed if it existed
-        if let Some(prev) = state.current.take() {
-            if !state.completed.contains(&prev) {
-                state.completed.push(prev);
-            }
-        }
-        state.current = Some(current.to_string());
-        state.remaining = remaining_after.to_vec();
-        ctx.save_propagation_state(&state)?;
+fn execute_step(ctx: &Ctx, step: &PropagationStep) -> Result<bool> {
+    let before = ctx.git.rev_parse(&format!("refs/heads/{}", step.branch))?;
+    ctx.git.checkout(&step.branch)?;
+    let result = match &step.upstream {
+        Some(upstream) => ctx.git.rebase_onto(&step.onto, upstream)?,
+        None => ctx.git.rebase(&step.onto)?,
+    };
+    if matches!(result, RebaseResult::Conflict) {
+        return Ok(false);
+    }
+    let after = ctx.git.rev_parse(&format!("refs/heads/{}", step.branch))?;
+    Ok(before != after)
+}
+
+fn set_current_step(
+    ctx: &Ctx,
+    current: &PropagationStep,
+    remaining: &[PropagationStep],
+) -> Result<()> {
+    let Some(mut state) = ctx.propagation_state()? else {
+        bail!("Propagation state disappeared while rebasing.");
+    };
+    if let Some(previous) = state.current.take()
+        && !state.completed.contains(&previous)
+    {
+        state.completed.push(previous);
+    }
+    state.current = Some(current.branch.clone());
+    state.remaining = remaining.iter().map(|step| step.branch.clone()).collect();
+    state.steps = remaining.to_vec();
+    ctx.save_propagation_state(&state)
+}
+
+fn show_conflict_guidance(
+    ctx: &Ctx,
+    progress: usize,
+    total: usize,
+    step: &PropagationStep,
+) -> Result<()> {
+    let state = ctx
+        .propagation_state()?
+        .context("Propagation state disappeared while reporting a conflict.")?;
+    let command = state.operation.recovery_command();
+    ui::step_warn(
+        progress,
+        total,
+        &format!("Conflict rebasing '{}' onto '{}'", step.branch, step.onto),
+    );
+    ui::info("Resolve the conflicts, then run:");
+    ui::info("  git add <resolved files>");
+    ui::info(&format!("  gw {command} --continue"));
+    ui::info("");
+    ui::info("Or abort the entire operation:");
+    ui::info(&format!("  gw {command} --abort"));
+    Ok(())
+}
+
+fn finish_success(ctx: &Ctx) -> Result<()> {
+    let state = ctx
+        .propagation_state()?
+        .context("Propagation state disappeared before completion.")?;
+    if let Some(branch) = &state.actions.success_checkout {
+        ctx.git.checkout(branch)?;
+    } else {
+        ctx.git.checkout(&state.original_branch)?;
+    }
+    delete_branches(ctx, &state.actions.success_delete_branches)?;
+    ctx.remove_propagation_state()
+}
+
+fn restore_refs(ctx: &Ctx, refs: &[OriginalRef]) -> Result<()> {
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let updates = refs
+        .iter()
+        .map(|original| (original.branch.clone(), original.commit.clone()))
+        .collect::<Vec<_>>();
+    ctx.git.update_ref_transaction(&updates)
+}
+
+fn restore_metadata(ctx: &Ctx, actions: &PropagationActions) -> Result<()> {
+    if let Some(stack) = &actions.abort_restore_stack {
+        ctx.save_stack(stack)?;
+    }
+    if let Some(stack_name) = &actions.abort_delete_stack {
+        ctx.delete_stack(stack_name)?;
     }
     Ok(())
 }
 
-fn chrono_now() -> String {
-    // Simple ISO 8601 timestamp without pulling in chrono crate
+fn delete_branches(ctx: &Ctx, branches: &[String]) -> Result<()> {
+    for branch in branches {
+        if !ctx.git.branch_exists(branch)? {
+            continue;
+        }
+        ctx.git.delete_branch(branch)?;
+        ui::info(&format!("Deleted local branch '{branch}'"));
+    }
+    Ok(())
+}
+
+fn timestamp() -> String {
     let since_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

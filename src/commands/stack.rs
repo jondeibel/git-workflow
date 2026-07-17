@@ -1,21 +1,27 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::cli::StackCommands;
 use crate::context::Ctx;
 use crate::state::{BranchEntry, StackConfig};
-use crate::validate;
 use crate::ui;
+use crate::validate;
 
 pub fn run(cmd: StackCommands, ctx: &Ctx) -> Result<()> {
     match cmd {
-        StackCommands::Create {
-            name,
-            branch,
-            base,
-        } => create(ctx, &name, branch.as_deref(), base.as_deref()),
+        StackCommands::Create { name, branch, base } => {
+            create(ctx, &name, branch.as_deref(), base.as_deref())
+        }
         StackCommands::Delete { name } => delete(ctx, &name),
+        StackCommands::Rename { old, new } => rename(ctx, &old, &new),
         StackCommands::List => list(ctx),
     }
+}
+
+fn rename(ctx: &Ctx, old: &str, new: &str) -> Result<()> {
+    let mut catalog = ctx.stack_catalog()?;
+    catalog.rename_stack(old, new)?;
+    ui::success(&format!("Renamed stack '{old}' to '{new}'."));
+    Ok(())
 }
 
 fn create(ctx: &Ctx, name: &str, branch: Option<&str>, base: Option<&str>) -> Result<()> {
@@ -28,8 +34,8 @@ fn create(ctx: &Ctx, name: &str, branch: Option<&str>, base: Option<&str>) -> Re
     let branch_name = match branch {
         Some(b) => b.to_string(),
         None => {
-            let input = ui::prompt("Root branch name", Some(name))
-                .context("Failed to read branch name")?;
+            let input =
+                ui::prompt("Root branch name", Some(name)).context("Failed to read branch name")?;
             if input.is_empty() {
                 bail!("Branch name cannot be empty.");
             }

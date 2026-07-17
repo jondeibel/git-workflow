@@ -1,13 +1,31 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use std::process::Command;
+
+use common::{TestRepo, gw_cmd};
 use predicates::prelude::*;
+use tempfile::TempDir;
 
 #[test]
 fn tree_no_stacks() {
     let repo = TestRepo::new();
     gw_cmd(&repo.path)
         .args(["tree"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No stacks"));
+}
+
+#[test]
+fn default_command_works_on_an_unborn_branch() {
+    let repo = TempDir::new().unwrap();
+    Command::new("git")
+        .arg("init")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    gw_cmd(repo.path())
         .assert()
         .success()
         .stdout(predicate::str::contains("No stacks"));
@@ -24,10 +42,7 @@ fn tree_single_stack_single_branch() {
         .success();
     repo.commit_file("a.txt", "a", "auth work");
 
-    let output = gw_cmd(&repo.path)
-        .args(["tree"])
-        .output()
-        .unwrap();
+    let output = gw_cmd(&repo.path).args(["tree"]).output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
     assert!(stdout.contains(&main_branch), "should show base branch");
@@ -48,14 +63,59 @@ fn tree_shows_commits_as_sub_items() {
     repo.commit_file("a1.txt", "a1", "first commit");
     repo.commit_file("a2.txt", "a2", "second commit");
 
-    let output = gw_cmd(&repo.path)
-        .args(["tree"])
-        .output()
-        .unwrap();
+    let output = gw_cmd(&repo.path).args(["tree"]).output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
-    assert!(stdout.contains("first commit"), "should show first commit: {stdout}");
-    assert!(stdout.contains("second commit"), "should show second commit: {stdout}");
+    assert!(
+        stdout.contains("first commit"),
+        "should show first commit: {stdout}"
+    );
+    assert!(
+        stdout.contains("second commit"),
+        "should show second commit: {stdout}"
+    );
+}
+
+#[test]
+fn default_command_omits_commits() {
+    let repo = TestRepo::new();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    repo.commit_file("a.txt", "a", "commit only shown in log view");
+
+    let output = gw_cmd(&repo.path).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert!(stdout.contains("auth"), "should show branch name: {stdout}");
+    assert!(
+        !stdout.contains("commit only shown in log view"),
+        "should omit commits from the summary view: {stdout}"
+    );
+}
+
+#[test]
+fn overview_json_is_structured_and_omits_commits() {
+    let repo = TestRepo::new();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    repo.commit_file("a.txt", "a", "commit omitted from overview");
+
+    let output = gw_cmd(&repo.path)
+        .args(["overview", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["stacks"][0]["name"], "auth");
+    assert_eq!(
+        value["stacks"][0]["branches"][0]["commits"],
+        serde_json::json!([])
+    );
 }
 
 #[test]
@@ -106,7 +166,10 @@ fn tree_highlights_current_branch() {
     let stdout = String::from_utf8(output.stdout).unwrap();
 
     // Current branch marker (@ in jj style)
-    assert!(stdout.contains("@"), "should have current branch indicator: {stdout}");
+    assert!(
+        stdout.contains("@"),
+        "should have current branch indicator: {stdout}"
+    );
 }
 
 #[test]
@@ -135,11 +198,23 @@ fn tree_three_branch_stack_with_commits() {
     let output = gw_cmd(&repo.path).args(["tree"]).output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
-    assert!(stdout.contains("feature"), "should show root branch: {stdout}");
-    assert!(stdout.contains("feature-tests"), "should show middle branch: {stdout}");
-    assert!(stdout.contains("feature-ui"), "should show leaf branch: {stdout}");
+    assert!(
+        stdout.contains("feature"),
+        "should show root branch: {stdout}"
+    );
+    assert!(
+        stdout.contains("feature-tests"),
+        "should show middle branch: {stdout}"
+    );
+    assert!(
+        stdout.contains("feature-ui"),
+        "should show leaf branch: {stdout}"
+    );
     assert!(stdout.contains(&main_branch), "should show base: {stdout}");
-    assert!(stdout.contains("feature work"), "should show commit messages: {stdout}");
+    assert!(
+        stdout.contains("feature work"),
+        "should show commit messages: {stdout}"
+    );
     assert!(stdout.contains("test work"));
     assert!(stdout.contains("ui work"));
 }
@@ -164,7 +239,10 @@ fn tree_missing_branch_shows_indicator() {
 
     let output = gw_cmd(&repo.path).args(["tree"]).output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("missing"), "should show missing indicator, got: {stdout}");
+    assert!(
+        stdout.contains("missing"),
+        "should show missing indicator, got: {stdout}"
+    );
 }
 
 #[test]

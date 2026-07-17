@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -6,10 +6,8 @@ use std::path::Path;
 use crate::cli::SplitArgs;
 use crate::context::Ctx;
 use crate::git::CherryPickResult;
-use crate::propagation::{self, PropagationResult};
-use crate::state::{
-    ActiveState, BranchEntry, Operation, SplitBucket, SplitState, StackConfig,
-};
+use crate::propagation::{self, PropagationPlan, PropagationResult};
+use crate::state::{ActiveState, BranchEntry, Operation, SplitBucket, SplitState, StackConfig};
 use crate::ui;
 use crate::validate;
 
@@ -313,7 +311,14 @@ pub fn run(args: SplitArgs, ctx: &Ctx) -> Result<()> {
     let result = execute_cherry_picks(ctx, &split_state)?;
     match result {
         CherryPickPhaseResult::Complete { created_branches } => {
-            finalize_split(ctx, &current_branch, &base_branch, &stack_name, &created_branches, existing_stack.as_ref())?;
+            finalize_split(
+                ctx,
+                &current_branch,
+                &base_branch,
+                &stack_name,
+                &created_branches,
+                existing_stack.as_ref(),
+            )?;
         }
         CherryPickPhaseResult::Conflict { branch } => {
             ui::warn(&format!("Conflict while cherry-picking onto '{branch}'."));
@@ -432,10 +437,7 @@ fn do_continue(ctx: &Ctx) -> Result<()> {
                     CherryPickResult::Success => {}
                     CherryPickResult::Conflict => {
                         let bucket = &state.buckets[state.current_bucket_index];
-                        ui::warn(&format!(
-                            "Still conflicting on '{}'.",
-                            bucket.name
-                        ));
+                        ui::warn(&format!("Still conflicting on '{}'.", bucket.name));
                         return Ok(());
                     }
                 }
@@ -507,7 +509,7 @@ fn do_continue(ctx: &Ctx) -> Result<()> {
                 );
             }
             // Delegate to propagation engine
-            match propagation::continue_propagation(ctx)? {
+            match propagation::continue_operation(ctx, Operation::Split)? {
                 PropagationResult::Success { rebased_count } => {
                     ui::success(&format!(
                         "Split complete. {rebased_count} descendant branch{} rebased.",
@@ -515,9 +517,7 @@ fn do_continue(ctx: &Ctx) -> Result<()> {
                     ));
                 }
                 PropagationResult::Conflict { branch } => {
-                    ui::warn(&format!(
-                        "Conflict rebasing descendant '{branch}'."
-                    ));
+                    ui::warn(&format!("Conflict rebasing descendant '{branch}'."));
                     ui::info("Resolve conflicts, then run `gw split --continue`.");
                 }
             }
@@ -555,18 +555,10 @@ fn do_abort(ctx: &Ctx) -> Result<()> {
         }
         Some(ActiveState::Propagation(prop_state)) => {
             if prop_state.operation != Operation::Split {
-                bail!(
-                    "No split in progress. Use `gw rebase --abort` for the active propagation."
-                );
+                bail!("No split in progress. Use `gw rebase --abort` for the active propagation.");
             }
-            // Abort propagation (restores descendant refs)
-            propagation::abort(ctx)?;
-
-            // The propagation abort cleaned up state, but we may also need
-            // to clean up the split-created branches and stack config.
-            // For simplicity in v1, the propagation abort handles ref restoration,
-            // and we inform the user.
-            ui::success("Split propagation aborted. Descendant branches restored.");
+            propagation::abort(ctx, Operation::Split)?;
+            ui::success("Split aborted. Branches and stack metadata restored.");
             Ok(())
         }
         None => bail!("No split in progress."),
@@ -641,17 +633,20 @@ fn finalize_split(
             // (their old parent was the original branch, not the new leaf)
             let upstream_overrides: Vec<Option<String>> = vec![Some(original_branch.to_string())]
                 .into_iter()
-                .chain(std::iter::repeat(None).take(descendants.len() - 1))
+                .chain(std::iter::repeat_n(None, descendants.len() - 1))
                 .collect();
 
-            match propagation::start_with_upstreams(
-                ctx,
-                Operation::Split,
-                &stack.name,
-                &descendants,
-                &onto_targets,
-                &upstream_overrides,
-            )? {
+            let plan =
+                PropagationPlan::new(Operation::Split, &stack.name, &descendants, &onto_targets)?
+                    .with_upstreams(&upstream_overrides)?
+                    .on_success(Some(created_branches[0].clone()), vec![])
+                    .on_abort(
+                        Some(original_branch.to_string()),
+                        Some(stack.clone()),
+                        None,
+                        created_branches.to_vec(),
+                    );
+            match propagation::start(ctx, plan)? {
                 PropagationResult::Success { rebased_count } => {
                     ui::info(&format!(
                         "{rebased_count} descendant branch{} rebased.",
@@ -659,9 +654,7 @@ fn finalize_split(
                     ));
                 }
                 PropagationResult::Conflict { branch } => {
-                    ui::warn(&format!(
-                        "Conflict rebasing descendant '{branch}'."
-                    ));
+                    ui::warn(&format!("Conflict rebasing descendant '{branch}'."));
                     ui::info("Resolve conflicts, then run `gw split --continue`.");
                     return Ok(());
                 }

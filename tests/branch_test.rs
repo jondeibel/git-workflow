@@ -1,6 +1,6 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use common::{TestRepo, gw_cmd};
 use predicates::prelude::*;
 
 // ============================================================
@@ -22,7 +22,9 @@ fn branch_create_basic() {
         .args(["branch", "create", "auth-tests"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Added 'auth-tests' to stack 'auth'"))
+        .stdout(predicate::str::contains(
+            "Added 'auth-tests' to stack 'auth'",
+        ))
         .stdout(predicate::str::contains("Child of 'auth'"));
 
     // Should be on the new branch
@@ -82,7 +84,7 @@ fn branch_create_not_on_tracked_branch_fails() {
 }
 
 #[test]
-fn branch_create_not_from_leaf_fails() {
+fn branch_create_inserts_after_current() {
     let repo = TestRepo::new();
 
     gw_cmd(&repo.path)
@@ -94,6 +96,7 @@ fn branch_create_not_from_leaf_fails() {
         .args(["branch", "create", "auth-tests"])
         .assert()
         .success();
+    repo.commit_file("tests.txt", "tests", "tests work");
 
     // Go back to auth (not the leaf)
     repo.git(&["checkout", "auth"]);
@@ -101,8 +104,59 @@ fn branch_create_not_from_leaf_fails() {
     gw_cmd(&repo.path)
         .args(["branch", "create", "another"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("not the leaf"));
+        .success()
+        .stdout(predicate::str::contains("Child of 'auth'"));
+
+    let toml = repo.read_stack_toml("auth");
+    let auth = toml.find("name = \"auth\"").unwrap();
+    let another = toml.find("name = \"another\"").unwrap();
+    let tests = toml.find("name = \"auth-tests\"").unwrap();
+    assert!(auth < another);
+    assert!(another < tests);
+    assert!(!repo.path.join("tests.txt").exists());
+}
+
+#[test]
+fn branch_create_after_explicit_parent() {
+    let repo = TestRepo::new();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "auth-tests"])
+        .assert()
+        .success();
+
+    gw_cmd(&repo.path)
+        .args(["branch", "create", "auth-middle", "--after", "auth"])
+        .assert()
+        .success();
+
+    let toml = repo.read_stack_toml("auth");
+    let middle = toml.find("name = \"auth-middle\"").unwrap();
+    let tests = toml.find("name = \"auth-tests\"").unwrap();
+    assert!(middle < tests);
+}
+
+#[test]
+fn branch_rename_updates_git_and_metadata() {
+    let repo = TestRepo::new();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+
+    gw_cmd(&repo.path)
+        .args(["branch", "rename", "auth", "auth-api"])
+        .assert()
+        .success();
+
+    assert!(!repo.branch_exists("auth"));
+    assert!(repo.branch_exists("auth-api"));
+    assert_eq!(repo.current_branch(), "auth-api");
+    let toml = repo.read_stack_toml("auth");
+    assert!(toml.contains("name = \"auth-api\""));
 }
 
 #[test]
@@ -164,7 +218,9 @@ fn branch_remove_leaf() {
         .args(["branch", "remove", "auth-tests"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Removed 'auth-tests' from stack 'auth'"))
+        .stdout(predicate::str::contains(
+            "Removed 'auth-tests' from stack 'auth'",
+        ))
         .stdout(predicate::str::contains("still exists"));
 
     // Git branch still exists
@@ -240,7 +296,9 @@ fn branch_remove_middle_reparents() {
         .args(["branch", "remove", "auth-tests"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Re-parented 'auth-ui' onto 'auth'"));
+        .stdout(predicate::str::contains(
+            "Re-parented 'auth-ui' onto 'auth'",
+        ));
 
     // TOML should have auth and auth-ui
     let toml = repo.read_stack_toml("auth");
@@ -370,7 +428,9 @@ fn branch_create_auto_stashes_dirty_work() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Stashed changes for auth"))
-        .stdout(predicate::str::contains("Added 'auth-tests' to stack 'auth'"));
+        .stdout(predicate::str::contains(
+            "Added 'auth-tests' to stack 'auth'",
+        ));
 
     // Should be on the new branch with a clean working tree
     assert_eq!(repo.current_branch(), "auth-tests");
@@ -381,10 +441,15 @@ fn branch_create_auto_stashes_dirty_work() {
         .args(["switch", "auth"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Restored stashed changes for auth"));
+        .stdout(predicate::str::contains(
+            "Restored stashed changes for auth",
+        ));
 
     assert!(repo.path.join("dirty.txt").exists());
-    assert_eq!(std::fs::read_to_string(repo.path.join("dirty.txt")).unwrap(), "wip");
+    assert_eq!(
+        std::fs::read_to_string(repo.path.join("dirty.txt")).unwrap(),
+        "wip"
+    );
 }
 
 #[test]

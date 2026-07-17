@@ -10,7 +10,7 @@ pub struct GwConfig {
     /// Default base branch for new stacks (e.g., "dev", "main")
     pub default_base: Option<String>,
     /// Whether to delete local branches after sync detects they were merged.
-    /// Defaults to true when not set.
+    /// Defaults to false when not set.
     pub delete_on_merge: Option<bool>,
 }
 
@@ -93,8 +93,16 @@ impl StackConfig {
     pub fn validate(&self) -> Result<()> {
         validate::validate_stack_name(&self.name)?;
         validate::validate_branch_name(&self.base_branch)?;
+        let mut names = std::collections::HashSet::new();
         for branch in &self.branches {
             validate::validate_branch_name(&branch.name)?;
+            if !names.insert(&branch.name) {
+                anyhow::bail!(
+                    "Branch '{}' appears more than once in stack '{}'.",
+                    branch.name,
+                    self.name
+                );
+            }
         }
         Ok(())
     }
@@ -118,6 +126,34 @@ pub enum Operation {
     Split,
 }
 
+impl Operation {
+    pub fn recovery_command(&self) -> &'static str {
+        match self {
+            Self::Rebase => "rebase",
+            Self::Sync => "sync",
+            Self::Split => "split",
+            Self::Adopt | Self::BranchRemove => "rebase",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropagationStep {
+    pub branch: String,
+    pub onto: String,
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PropagationActions {
+    pub success_checkout: Option<String>,
+    pub success_delete_branches: Vec<String>,
+    pub abort_checkout: Option<String>,
+    pub abort_restore_stack: Option<StackConfig>,
+    pub abort_delete_stack: Option<String>,
+    pub abort_delete_branches: Vec<String>,
+}
+
 /// Propagation state tracked in .git/gw/state.toml during multi-branch rebases.
 /// Only exists while a propagation is in progress.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,18 +171,21 @@ pub struct PropagationState {
     pub remaining: Vec<String>,
     /// The branch currently being rebased (or that hit a conflict).
     pub current: Option<String>,
+    /// Durable rebase targets for every remaining branch.
+    #[serde(default)]
+    pub steps: Vec<PropagationStep>,
+    /// Work that must happen only after success or abort.
+    #[serde(default)]
+    pub actions: PropagationActions,
 }
 
 /// Write content to a file atomically using temp file + rename.
 pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     use std::io::Write;
-    let dir = path
-        .parent()
-        .context("file path has no parent directory")?;
+    let dir = path.parent().context("file path has no parent directory")?;
     std::fs::create_dir_all(dir)
         .with_context(|| format!("failed to create directory {}", dir.display()))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .context("failed to create temp file")?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).context("failed to create temp file")?;
     tmp.write_all(content.as_bytes())
         .context("failed to write to temp file")?;
     tmp.persist(path)
@@ -167,8 +206,7 @@ pub fn load_stack(path: &Path) -> Result<StackConfig> {
 
 /// Save a stack config to a TOML file atomically.
 pub fn save_stack(path: &Path, config: &StackConfig) -> Result<()> {
-    let content =
-        toml::to_string_pretty(config).context("failed to serialize stack config")?;
+    let content = toml::to_string_pretty(config).context("failed to serialize stack config")?;
     atomic_write(path, &content)
 }
 
@@ -179,15 +217,14 @@ pub fn load_propagation_state(path: &Path) -> Result<Option<PropagationState>> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let state: PropagationState = toml::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let state: PropagationState =
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(Some(state))
 }
 
 /// Save propagation state atomically.
 pub fn save_propagation_state(path: &Path, state: &PropagationState) -> Result<()> {
-    let content =
-        toml::to_string_pretty(state).context("failed to serialize propagation state")?;
+    let content = toml::to_string_pretty(state).context("failed to serialize propagation state")?;
     atomic_write(path, &content)
 }
 
@@ -253,7 +290,7 @@ impl SplitState {
 /// Discriminated union for state.toml which can contain either a PropagationState
 /// or a SplitState depending on the active operation.
 pub enum ActiveState {
-    Propagation(PropagationState),
+    Propagation(Box<PropagationState>),
     Split(SplitState),
 }
 
@@ -278,16 +315,16 @@ pub fn load_active_state(path: &Path) -> Result<Option<ActiveState>> {
         state.validate()?;
         Ok(Some(ActiveState::Split(state)))
     } else {
-        let state: PropagationState = toml::from_str(&content)
-            .with_context(|| format!("failed to parse propagation state from {}", path.display()))?;
-        Ok(Some(ActiveState::Propagation(state)))
+        let state: PropagationState = toml::from_str(&content).with_context(|| {
+            format!("failed to parse propagation state from {}", path.display())
+        })?;
+        Ok(Some(ActiveState::Propagation(Box::new(state))))
     }
 }
 
 /// Save split state atomically.
 pub fn save_split_state(path: &Path, state: &SplitState) -> Result<()> {
-    let content =
-        toml::to_string_pretty(state).context("failed to serialize split state")?;
+    let content = toml::to_string_pretty(state).context("failed to serialize split state")?;
     atomic_write(path, &content)
 }
 
@@ -390,6 +427,8 @@ mod tests {
             completed: vec![],
             remaining: vec!["feature/auth-tests".to_string()],
             current: Some("feature/auth-tests".to_string()),
+            steps: vec![],
+            actions: PropagationActions::default(),
         };
 
         let serialized = toml::to_string_pretty(&state).unwrap();
@@ -487,6 +526,8 @@ mod tests {
             completed: vec!["billing-ui".to_string()],
             remaining: vec!["billing-tests".to_string()],
             current: Some("billing-tests".to_string()),
+            steps: vec![],
+            actions: PropagationActions::default(),
         };
 
         save_propagation_state(&path, &state).unwrap();
@@ -546,6 +587,8 @@ name = "--malicious"
                 completed: vec![],
                 remaining: vec![],
                 current: None,
+                steps: vec![],
+                actions: PropagationActions::default(),
             };
             let serialized = toml::to_string_pretty(&state).unwrap();
             let deserialized: PropagationState = toml::from_str(&serialized).unwrap();

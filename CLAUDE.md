@@ -30,7 +30,7 @@ gw tree --pr                    # include PR status from GitHub (slower)
 
 ### After addressing PR feedback
 ```bash
-git checkout <branch-with-feedback>
+gw switch <branch-with-feedback>
 # ... make changes, commit ...
 gw rebase                       # propagates rebase to all descendant branches
 gw push --yes                   # push current branch (force-with-lease if needed)
@@ -75,7 +75,7 @@ Most commands are blocked during a propagation or split. Only `gw tree`, `gw swi
 
 ## Important Notes
 
-- `gw push` only pushes the current branch, never descendants
+- `gw push` pushes the current branch; `gw push --stack` includes every descendant
 - `gw sync` only rebases when a branch was actually merged (stacks stay pinned otherwise)
 - Branch names can't start with `-` (prevents git argument injection)
 - Stack metadata is in `.git/gw/stacks/<name>.toml`, propagation state in `.git/gw/state.toml`

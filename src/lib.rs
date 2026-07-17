@@ -1,9 +1,11 @@
+pub mod catalog;
 pub mod cli;
 pub mod commands;
 pub mod context;
 pub mod gh;
 pub mod git;
 pub mod propagation;
+pub mod snapshot;
 pub mod stash;
 pub mod state;
 pub mod ui;

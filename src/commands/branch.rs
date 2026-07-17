@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::cli::BranchCommands;
 use crate::context::Ctx;
@@ -9,54 +9,73 @@ use crate::validate;
 
 pub fn run(cmd: BranchCommands, ctx: &Ctx) -> Result<()> {
     match cmd {
-        BranchCommands::Create { name } => create(ctx, &name),
+        BranchCommands::Create { name, after } => create(ctx, &name, after.as_deref()),
         BranchCommands::Remove { name } => remove(ctx, &name),
+        BranchCommands::Rename { old, new } => rename(ctx, &old, &new),
     }
 }
 
-fn create(ctx: &Ctx, name: &str) -> Result<()> {
+fn create(ctx: &Ctx, name: &str, after: Option<&str>) -> Result<()> {
     validate::validate_branch_name(name)?;
 
     let current = ctx.git.current_branch()?;
-
-    let mut stack = match ctx.find_stack_for_branch(&current)? {
+    let parent = after.unwrap_or(&current);
+    let mut stack = match ctx.find_stack_for_branch(parent)? {
         Some(s) => s,
         None => {
             bail!(
-                "Current branch '{current}' is not tracked by any gw stack.\n\
+                "Branch '{parent}' is not tracked by any gw stack.\n\
                  Use `gw stack create` to start a new stack or `gw adopt` to track existing branches."
             );
         }
     };
 
-    // Enforce strictly linear: current branch must be the leaf
-    if let Some(leaf) = stack.leaf_branch() {
-        if leaf.name != current {
-            bail!(
-                "Can only add branches from the leaf of the stack.\n\
-                 Current branch '{current}' is not the leaf. Checkout '{}' first.",
-                leaf.name
-            );
-        }
-    }
-
     if ctx.git.branch_exists(name)? {
         bail!("Branch '{name}' already exists.");
     }
 
-    let head = ctx.git.rev_parse("HEAD")?;
+    let head = ctx.git.rev_parse(&format!("refs/heads/{parent}"))?;
     ctx.git.create_branch(name, &head)?;
 
-    stack.branches.push(BranchEntry {
-        name: name.to_string(),
-    });
-    ctx.save_stack(&stack)?;
+    let parent_index = stack
+        .branch_index(parent)
+        .expect("tracked parent should have a stack position");
+    stack.branches.insert(
+        parent_index + 1,
+        BranchEntry {
+            name: name.to_string(),
+        },
+    );
+    if let Err(error) = ctx.save_stack(&stack) {
+        let _ = ctx.git.delete_branch(name);
+        return Err(error);
+    }
 
     stash::checkout_with_stash(ctx, name)?;
 
     ui::success(&format!("Added '{name}' to stack '{}'", stack.name));
-    ui::info(&format!("Child of '{current}'"));
+    ui::info(&format!("Child of '{parent}'"));
 
+    Ok(())
+}
+
+fn rename(ctx: &Ctx, old: &str, new: &str) -> Result<()> {
+    validate::validate_branch_name(old)?;
+    validate::validate_branch_name(new)?;
+    if ctx.find_stack_for_branch(old)?.is_none() {
+        bail!("Branch '{old}' is not tracked by any gw stack.");
+    }
+    if ctx.git.branch_exists(new)? {
+        bail!("Branch '{new}' already exists.");
+    }
+
+    ctx.git.rename_branch(old, new)?;
+    let mut catalog = ctx.stack_catalog()?;
+    if let Err(error) = catalog.rename_branch(old, new) {
+        let _ = ctx.git.rename_branch(new, old);
+        return Err(error);
+    }
+    ui::success(&format!("Renamed branch '{old}' to '{new}'."));
     Ok(())
 }
 
@@ -86,7 +105,9 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
 
     if has_child {
         // The child needs to be rebased onto the removed branch's parent
-        let parent = stack.parent_of(name).expect("tracked branch should have a parent");
+        let parent = stack
+            .parent_of(name)
+            .expect("tracked branch should have a parent");
         let child_name = stack.branches[idx + 1].name.clone();
 
         // Check working tree is clean before rebasing

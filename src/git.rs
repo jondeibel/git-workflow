@@ -1,7 +1,14 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
+
+fn next_path<'a>(lines: &mut impl Iterator<Item = &'a str>, label: &str) -> Result<PathBuf> {
+    let value = lines
+        .next()
+        .ok_or_else(|| anyhow!("missing {label} from git rev-parse"))?;
+    Ok(PathBuf::from(value))
+}
 
 /// Result of a git rebase operation.
 pub enum RebaseResult {
@@ -36,54 +43,87 @@ pub struct CommitInfo {
 /// command injection.
 pub struct Git {
     repo_path: PathBuf,
+    git_dir: PathBuf,
+    common_git_dir: PathBuf,
 }
 
 impl Git {
     pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+        let git_dir = repo_path.join(".git");
+        Self {
+            repo_path,
+            common_git_dir: git_dir.clone(),
+            git_dir,
+        }
     }
 
     /// Find the git repository root from the current directory.
     pub fn discover() -> Result<Self> {
         let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
+            .args([
+                "rev-parse",
+                "--show-toplevel",
+                "--absolute-git-dir",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ])
             .output()
             .context("failed to execute git")?;
 
         if !output.status.success() {
-            return Err(anyhow!(
-                "Not a git repository. Run `git init` first."
-            ));
+            return Err(anyhow!("Not a git repository. Run `git init` first."));
         }
 
-        let path = String::from_utf8(output.stdout)
-            .context("git output was not valid UTF-8")?;
-        Ok(Self::new(PathBuf::from(path.trim())))
+        let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
+        let mut lines = stdout.lines();
+        let repo_path = next_path(&mut lines, "repo path")?;
+        let git_dir = next_path(&mut lines, "git directory")?;
+        let common_git_dir = next_path(&mut lines, "common git directory")?;
+        Ok(Self {
+            repo_path,
+            git_dir,
+            common_git_dir,
+        })
     }
 
     /// Discover the repo and get the current branch in a single subprocess.
+    /// Unborn branches need a fallback because rev-parse cannot resolve HEAD yet.
     pub fn discover_with_branch() -> Result<(Self, String)> {
         let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"])
+            .args([
+                "rev-parse",
+                "--show-toplevel",
+                "--absolute-git-dir",
+                "--path-format=absolute",
+                "--git-common-dir",
+                "--abbrev-ref",
+                "HEAD",
+            ])
             .output()
             .context("failed to execute git")?;
 
         if !output.status.success() {
-            return Err(anyhow!(
-                "Not a git repository. Run `git init` first."
-            ));
+            let git = Self::discover()?;
+            let branch = git.run(&["symbolic-ref", "--short", "HEAD"])?;
+            return Ok((git, branch));
         }
 
-        let stdout =
-            String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
+        let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
         let mut lines = stdout.lines();
-        let path = lines
-            .next()
-            .ok_or_else(|| anyhow!("missing repo path from git rev-parse"))?;
+        let repo_path = next_path(&mut lines, "repo path")?;
+        let git_dir = next_path(&mut lines, "git directory")?;
+        let common_git_dir = next_path(&mut lines, "common git directory")?;
         let branch = lines
             .next()
             .ok_or_else(|| anyhow!("missing branch from git rev-parse"))?;
-        Ok((Self::new(PathBuf::from(path)), branch.to_string()))
+        Ok((
+            Self {
+                repo_path,
+                git_dir,
+                common_git_dir,
+            },
+            branch.to_string(),
+        ))
     }
 
     /// Run a git command and return stdout as a trimmed string.
@@ -107,8 +147,7 @@ impl Git {
             ));
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("git output was not valid UTF-8")?;
+        let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
         Ok(stdout.trim().to_string())
     }
 
@@ -137,8 +176,7 @@ impl Git {
             return Err(anyhow!("git command failed: {}", stderr.trim()));
         }
 
-        let stdout =
-            String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
+        let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
         Ok(stdout.trim().to_string())
     }
 
@@ -155,6 +193,14 @@ impl Git {
 
     pub fn repo_path(&self) -> &std::path::Path {
         &self.repo_path
+    }
+
+    pub fn git_dir(&self) -> &std::path::Path {
+        &self.git_dir
+    }
+
+    pub fn common_git_dir(&self) -> &std::path::Path {
+        &self.common_git_dir
     }
 
     /// Get the name of the current branch.
@@ -270,8 +316,7 @@ impl Git {
 
     /// Check if a git rebase is currently in progress.
     pub fn is_rebase_in_progress(&self) -> bool {
-        let git_dir = self.repo_path.join(".git");
-        git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists()
+        self.git_dir.join("rebase-merge").exists() || self.git_dir.join("rebase-apply").exists()
     }
 
     /// Check for unresolved merge conflicts.
@@ -287,8 +332,7 @@ impl Git {
 
     /// Check if `ancestor` is an ancestor of `descendant`.
     pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool> {
-        let output =
-            self.run_raw(&["merge-base", "--is-ancestor", ancestor, descendant])?;
+        let output = self.run_raw(&["merge-base", "--is-ancestor", ancestor, descendant])?;
         Ok(output.status.success())
     }
 
@@ -297,7 +341,11 @@ impl Git {
         let remote_ref = format!("origin/{branch}");
         // Check if remote tracking ref exists
         let remote_exists = self
-            .run_raw(&["rev-parse", "--verify", &format!("refs/remotes/{remote_ref}")])?
+            .run_raw(&[
+                "rev-parse",
+                "--verify",
+                &format!("refs/remotes/{remote_ref}"),
+            ])?
             .status
             .success();
 
@@ -323,7 +371,12 @@ impl Git {
     }
 
     /// Get commits between base and head as (short_sha, subject) pairs.
-    pub fn log_oneline(&self, base: &str, head: &str, limit: usize) -> Result<Vec<(String, String)>> {
+    pub fn log_oneline(
+        &self,
+        base: &str,
+        head: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>> {
         let output = self.run(&[
             "log",
             "--reverse",
@@ -346,15 +399,42 @@ impl Git {
 
     /// Push a branch to origin.
     pub fn push(&self, branch: &str) -> Result<()> {
-        self.run(&["push", "origin", branch])?;
+        self.push_to("origin", branch)?;
+        Ok(())
+    }
+
+    pub fn push_to(&self, remote: &str, branch: &str) -> Result<()> {
+        self.run(&["push", "--set-upstream", remote, branch])?;
         Ok(())
     }
 
     /// Force push a branch with lease, using an explicit expected SHA for safety.
     pub fn push_force_with_lease(&self, branch: &str, expected_sha: &str) -> Result<()> {
+        self.push_force_with_lease_to("origin", branch, expected_sha)
+    }
+
+    pub fn push_force_with_lease_to(
+        &self,
+        remote: &str,
+        branch: &str,
+        expected_sha: &str,
+    ) -> Result<()> {
         let lease = format!("--force-with-lease={branch}:{expected_sha}");
-        self.run(&["push", "origin", &lease, branch])?;
+        self.run(&["push", "--set-upstream", remote, &lease, branch])?;
         Ok(())
+    }
+
+    pub fn remote_branch_sha(&self, remote: &str, branch: &str) -> Result<Option<String>> {
+        let reference = format!("refs/remotes/{remote}/{branch}");
+        let output = self.run_raw(&["rev-parse", "--verify", &reference])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let sha = String::from_utf8(output.stdout)
+            .context("git output was not valid UTF-8")?
+            .trim()
+            .to_string();
+        Ok(Some(sha))
     }
 
     /// Fetch a specific branch from origin.
@@ -427,10 +507,7 @@ impl Git {
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(anyhow!(
-            "git stash pop failed: {}",
-            stderr.trim()
-        ))
+        Err(anyhow!("git stash pop failed: {}", stderr.trim()))
     }
 
     /// Cherry-pick a single commit onto the current branch.
@@ -489,12 +566,17 @@ impl Git {
 
     /// Check if a git cherry-pick is currently in progress.
     pub fn is_cherry_pick_in_progress(&self) -> bool {
-        self.repo_path.join(".git").join("CHERRY_PICK_HEAD").exists()
+        self.git_dir.join("CHERRY_PICK_HEAD").exists()
     }
 
     /// Delete a local branch (force).
     pub fn delete_branch(&self, name: &str) -> Result<()> {
         self.run(&["branch", "-D", name])?;
+        Ok(())
+    }
+
+    pub fn rename_branch(&self, old: &str, new: &str) -> Result<()> {
+        self.run(&["branch", "-m", old, new])?;
         Ok(())
     }
 
@@ -574,7 +656,10 @@ impl Git {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow!("git update-ref transaction failed: {}", stderr.trim()));
+            return Err(anyhow!(
+                "git update-ref transaction failed: {}",
+                stderr.trim()
+            ));
         }
 
         Ok(())
@@ -725,12 +810,14 @@ mod tests {
         let new_sha = git.rev_parse("HEAD").unwrap();
 
         // Reset branch-a back to original
-        git.update_ref_transaction(&[("branch-a".to_string(), head.clone())]).unwrap();
+        git.update_ref_transaction(&[("branch-a".to_string(), head.clone())])
+            .unwrap();
         let after = git.rev_parse("refs/heads/branch-a").unwrap();
         assert_eq!(after, head);
 
         // Verify we can also move it forward
-        git.update_ref_transaction(&[("branch-a".to_string(), new_sha.clone())]).unwrap();
+        git.update_ref_transaction(&[("branch-a".to_string(), new_sha.clone())])
+            .unwrap();
         let after = git.rev_parse("refs/heads/branch-a").unwrap();
         assert_eq!(after, new_sha);
     }
@@ -748,7 +835,8 @@ mod tests {
         git.checkout("branch-a").unwrap();
         std::fs::write(git.repo_path().join("README.md"), "branch-a content").unwrap();
         git.run(&["add", "."]).unwrap();
-        git.run(&["commit", "-m", "branch-a changes README"]).unwrap();
+        git.run(&["commit", "-m", "branch-a changes README"])
+            .unwrap();
 
         // Main also modifies README (creates conflict)
         git.checkout(&main_branch).unwrap();
@@ -813,7 +901,8 @@ mod tests {
             ("b1".to_string(), base.clone()),
             ("b2".to_string(), new_sha.clone()),
             ("b3".to_string(), new_sha.clone()),
-        ]).unwrap();
+        ])
+        .unwrap();
 
         assert_eq!(git.rev_parse("refs/heads/b1").unwrap(), base);
         assert_eq!(git.rev_parse("refs/heads/b2").unwrap(), new_sha);

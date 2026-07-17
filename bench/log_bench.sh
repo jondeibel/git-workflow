@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Benchmark harness for `gw log`
+# Benchmark harness for the `gw` summary and `gw log`
 #
 # Creates a temp repo, builds stacks at a few sizes, and measures:
-#   1. Wall clock time for `gw log`
+#   1. Wall clock time for both views
 #   2. Number of git subprocess calls
 #
 # Usage: ./bench/log_bench.sh
@@ -26,7 +26,7 @@ trap cleanup EXIT
 setup_repo() {
   BENCH_DIR=$(mktemp -d)
   cd "$BENCH_DIR"
-  git init -q
+  git init -q -b main
   git config user.email "bench@test.com"
   git config user.name "Bench"
   echo "init" > README.md
@@ -48,12 +48,13 @@ create_stack() {
   done
 }
 
-time_log() {
+time_view() {
   local label="$1" runs=5 total=0
-  $GW log > /dev/null 2>&1  # warmup
+  shift
+  "$GW" "$@" > /dev/null 2>&1  # warmup
   for _ in $(seq 1 $runs); do
     local t
-    t=$( { time $GW log > /dev/null 2>&1; } 2>&1 | grep real | awk '{print $2}' | sed 's/[ms]/ /g' | awk '{printf "%.0f", $1*60000+$2*1000}' )
+    t=$( { time "$GW" "$@" > /dev/null 2>&1; } 2>&1 | grep real | awk '{print $2}' | sed 's/[ms]/ /g' | awk '{printf "%.0f", $1*60000+$2*1000}' )
     total=$((total + t))
   done
   local avg=$((total / runs))
@@ -62,6 +63,7 @@ time_log() {
 
 count_git() {
   local label="$1"
+  shift
   local wrapper_dir
   wrapper_dir=$(mktemp -d)
   cat > "$wrapper_dir/git" <<'WRAPPER'
@@ -71,7 +73,7 @@ exec /usr/bin/git "$@"
 WRAPPER
   chmod +x "$wrapper_dir/git"
   rm -f /tmp/gw-bench-git.log
-  PATH="$wrapper_dir:$PATH" $GW log > /dev/null 2>&1
+  PATH="$wrapper_dir:$PATH" "$GW" "$@" > /dev/null 2>&1
   local count
   count=$(wc -l < /tmp/gw-bench-git.log | tr -d ' ')
   echo -e "  ${YELLOW}git calls${RESET}: ${BOLD}${count}${RESET}"
@@ -86,8 +88,10 @@ echo -e "\n${BOLD}${CYAN}── Small: 1 stack, 3 branches, 2 commits each ─�
 setup_repo
 create_stack "feat" 3 2
 git checkout -q main
-time_log "gw log"
-count_git "gw log"
+time_view "gw"
+count_git "gw"
+time_view "gw log" log
+count_git "gw log" log
 rm -rf "$BENCH_DIR"
 
 # ── Scenario 2: medium (3 stacks, 3 branches, 3 commits) ──
@@ -98,8 +102,10 @@ for s in 1 2 3; do
   create_stack "s${s}" 3 3
 done
 git checkout -q main
-time_log "gw log"
-count_git "gw log"
+time_view "gw"
+count_git "gw"
+time_view "gw log" log
+count_git "gw log" log
 rm -rf "$BENCH_DIR"
 
 # ── Scenario 3: large (5 stacks, 5 branches, 3 commits) ──
@@ -110,7 +116,9 @@ for s in 1 2 3 4 5; do
   create_stack "s${s}" 5 3
 done
 git checkout -q main
-time_log "gw log"
-count_git "gw log"
+time_view "gw"
+count_git "gw"
+time_view "gw log" log
+count_git "gw log" log
 
 echo -e "\n${BOLD}Done.${RESET}"

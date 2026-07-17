@@ -1,8 +1,8 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::cli::RebaseArgs;
 use crate::context::Ctx;
-use crate::propagation::{self, PropagationResult};
+use crate::propagation::{self, PropagationPlan, PropagationResult};
 use crate::state::Operation;
 use crate::ui;
 
@@ -49,7 +49,10 @@ fn do_rebase(ctx: &Ctx) -> Result<()> {
         if branches.len() == 1 { "" } else { "es" }
     ));
 
-    match propagation::start(ctx, Operation::Rebase, &stack.name, &branches, &targets)? {
+    let plan = PropagationPlan::new(Operation::Rebase, &stack.name, &branches, &targets)?
+        .on_success(Some(current.clone()), vec![])
+        .on_abort(Some(current.clone()), None, None, vec![]);
+    match propagation::start(ctx, plan)? {
         PropagationResult::Success { rebased_count } => {
             // Return to original branch
             ctx.git.checkout(&current)?;
@@ -69,10 +72,8 @@ fn do_rebase(ctx: &Ctx) -> Result<()> {
 }
 
 fn do_continue(ctx: &Ctx) -> Result<()> {
-    match propagation::continue_propagation(ctx)? {
+    match propagation::continue_operation(ctx, Operation::Rebase)? {
         PropagationResult::Success { rebased_count } => {
-            // Try to return to the original branch from state
-            // (state was already removed by continue_propagation on success)
             ui::success(&format!(
                 "Rebase propagation complete. {rebased_count} branch{} rebased.",
                 if rebased_count == 1 { "" } else { "es" }
@@ -88,7 +89,7 @@ fn do_continue(ctx: &Ctx) -> Result<()> {
 }
 
 fn do_abort(ctx: &Ctx) -> Result<()> {
-    propagation::abort(ctx)?;
+    propagation::abort(ctx, Operation::Rebase)?;
     ui::success("Rebase propagation aborted. All branches restored to their previous state.");
     Ok(())
 }

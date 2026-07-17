@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+use crate::catalog::StackCatalog;
 use crate::git::Git;
 use crate::state::{self, ActiveState, GwConfig, PropagationState, SplitState, StackConfig};
 
@@ -11,6 +12,7 @@ pub struct Ctx {
     pub git: Git,
     pub gw_dir: PathBuf,
     pub stacks_dir: PathBuf,
+    state_dir: PathBuf,
     state_path: PathBuf,
     config_path: PathBuf,
 }
@@ -29,14 +31,16 @@ impl Ctx {
     }
 
     fn from_git(git: Git) -> Result<Self> {
-        let gw_dir = git.repo_path().join(".git").join("gw");
+        let gw_dir = git.common_git_dir().join("gw");
+        let state_dir = git.git_dir().join("gw");
         let stacks_dir = gw_dir.join("stacks");
-        let state_path = gw_dir.join("state.toml");
+        let state_path = state_dir.join("state.toml");
         let config_path = gw_dir.join("config.toml");
         Ok(Self {
             git,
             gw_dir,
             stacks_dir,
+            state_dir,
             state_path,
             config_path,
         })
@@ -45,7 +49,9 @@ impl Ctx {
     /// Bail if the working tree has uncommitted changes.
     pub fn require_clean_tree(&self) -> Result<()> {
         if !self.git.is_working_tree_clean()? {
-            anyhow::bail!("You have uncommitted changes. Commit or stash before running this command.");
+            anyhow::bail!(
+                "You have uncommitted changes. Commit or stash before running this command."
+            );
         }
         Ok(())
     }
@@ -53,7 +59,9 @@ impl Ctx {
     /// Ensure .git/gw/ and .git/gw/stacks/ directories exist.
     pub fn ensure_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(&self.stacks_dir)
-            .with_context(|| format!("failed to create {}", self.stacks_dir.display()))
+            .with_context(|| format!("failed to create {}", self.stacks_dir.display()))?;
+        std::fs::create_dir_all(&self.state_dir)
+            .with_context(|| format!("failed to create {}", self.state_dir.display()))
     }
 
     /// Load a stack by name.
@@ -66,20 +74,14 @@ impl Ctx {
     /// Path traversal is prevented by validate_stack_name() which rejects '/', '\', and '..'.
     pub fn save_stack(&self, config: &StackConfig) -> Result<()> {
         self.ensure_dirs()?;
-        let path = self.stacks_dir.join(format!("{}.toml", config.name));
-
-        state::save_stack(&path, config)
+        let mut catalog = StackCatalog::open(&self.stacks_dir)?;
+        catalog.save(config)
     }
 
     /// Delete a stack's TOML file.
     pub fn delete_stack(&self, name: &str) -> Result<()> {
-        crate::validate::validate_stack_name(name)?;
-        let path = self.stacks_dir.join(format!("{name}.toml"));
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        }
-        Ok(())
+        let mut catalog = StackCatalog::open(&self.stacks_dir)?;
+        catalog.delete(name)
     }
 
     /// Check if a stack exists.
@@ -89,39 +91,17 @@ impl Ctx {
 
     /// Load all stacks from .git/gw/stacks/*.toml
     pub fn load_all_stacks(&self) -> Result<Vec<StackConfig>> {
-        if !self.stacks_dir.exists() {
-            return Ok(vec![]);
-        }
-
-        let mut stacks = Vec::new();
-        let entries = std::fs::read_dir(&self.stacks_dir)
-            .with_context(|| format!("failed to read {}", self.stacks_dir.display()))?;
-
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                match state::load_stack(&path) {
-                    Ok(config) => stacks.push(config),
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: failed to load {}: {e}",
-                            path.display()
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(stacks)
+        Ok(StackCatalog::open(&self.stacks_dir)?.into_stacks())
     }
 
     /// Find which stack contains the given branch name.
     pub fn find_stack_for_branch(&self, branch: &str) -> Result<Option<StackConfig>> {
-        let stacks = self.load_all_stacks()?;
-        Ok(stacks
-            .into_iter()
-            .find(|s| s.branch_index(branch).is_some()))
+        let catalog = StackCatalog::open(&self.stacks_dir)?;
+        Ok(catalog.find_branch(branch).cloned())
+    }
+
+    pub fn stack_catalog(&self) -> Result<StackCatalog> {
+        StackCatalog::open(&self.stacks_dir)
     }
 
     /// Load propagation state if it exists.
@@ -180,6 +160,6 @@ impl Ctx {
                 return Ok(candidate.to_string());
             }
         }
-        Ok(self.git.current_branch()?)
+        self.git.current_branch()
     }
 }

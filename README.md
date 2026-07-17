@@ -4,7 +4,7 @@ You break a big feature into multiple PRs. You push the first one for review, ge
 
 `gw` handles all of that. It tracks the parent-child relationships between your branches, automatically propagates rebases through the chain, and detects squash merges so it can clean up the stack. Your branches are real git branches, your PRs are normal GitHub PRs, and gw just does the tedious coordination between them.
 
-Everything lives in `.git/gw/` and never gets pushed to the remote.
+Stack metadata lives in Git's common directory under `gw/` and never gets pushed to the remote. Linked worktrees share stacks while keeping active operation state isolated per worktree.
 
 <p align="center">
   <img src="docs/gw-tree.png" alt="gw log output showing three stacks with branches and commits" width="640">
@@ -114,7 +114,13 @@ gw stack create auth --branch auth-login
 # Do work, commit, then add the next branch
 gw branch create auth-tests
 
-# See everything (just `gw` also works)
+# See the fast stack summary
+gw
+
+# Get the same fast read model as structured JSON
+gw overview --json
+
+# Include commits for every branch
 gw log
 
 # Address PR feedback on auth, then propagate rebases
@@ -122,6 +128,9 @@ gw rebase
 
 # Push when ready
 gw push
+
+# Push this branch and every descendant after a propagated rebase
+gw push --stack
 
 # After auth gets squash-merged
 gw sync
@@ -190,15 +199,21 @@ gw config set-delete-on-merge true
 
 | Command | What it does |
 | --- | --- |
-| `gw` | Show all stacks (alias for `gw log`) |
+| `gw` | Show a fast summary of all stacks and branches |
+| `gw --pr` | Include PR status in the stack summary |
+| `gw --json` | Print the fast summary as structured JSON |
+| `gw overview [--pr] [--json]` | Show the explicit fast overview command |
 | `gw log` | Show all stacks with branches and commits |
 | `gw log --pr` | Include PR status from GitHub |
 | `gw stack create <name>` | Create a new stack (prompts for root branch name) |
 | `gw stack create <name> --branch <branch>` | Create a new stack with a specific root branch name |
 | `gw stack delete <name>` | Remove stack metadata (branches stay) |
+| `gw stack rename <old> <new>` | Rename a stack |
 | `gw stack list` | List all stacks |
-| `gw branch create <name>` | Add a branch to the current stack |
+| `gw branch create <name>` | Insert a branch after the current branch |
+| `gw branch create <name> --after <branch>` | Insert after another tracked branch |
 | `gw branch remove <name>` | Remove a branch and re-parent children |
+| `gw branch rename <old> <new>` | Rename a branch and update stack metadata |
 | `gw adopt <branches...>` | Adopt existing branches into a stack |
 | `gw split` | Interactively split a branch into a stack |
 | `gw split --plan <file>` | Split using a plan file |
@@ -207,11 +222,17 @@ gw config set-delete-on-merge true
 | `gw rebase` | Propagate rebases to descendants |
 | `gw rebase --continue` | Resume after resolving conflicts |
 | `gw rebase --abort` | Roll back all branches |
-| `gw sync` | Fetch base, detect merges, rebase stack |
+| `gw sync` | Fetch the base and remove merged roots; rebase only when a merge requires it |
 | `gw sync --rebase` | Explicitly rebase stack onto latest base |
 | `gw sync --merged <branch>` | Manually indicate a branch was merged |
+| `gw sync --continue` | Resume a conflicted sync and finish its cleanup |
+| `gw sync --abort` | Restore branches and stack metadata from a conflicted sync |
 | `gw push` | Push the current branch |
+| `gw push --stack` | Push the current branch and all descendants |
 | `gw switch [branch]` | Switch branches interactively or by name |
+| `gw status` | Show current branch commits, working tree, remote, and stack position |
+| `gw diff [--stat]` | Diff the current branch against its stack parent |
+| `gw doctor [--fix]` | Diagnose metadata drift and remove safe stale entries |
 | `gw config set-base <branch>` | Set the default base branch |
 | `gw config set-delete-on-merge <bool>` | Auto-delete local branches on merge |
 | `gw config show` | Show current configuration |

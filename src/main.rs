@@ -1,19 +1,32 @@
-use anyhow::{bail, Result};
-use clap::Parser;
+use anyhow::{Result, bail};
+use clap::{CommandFactory, Parser};
 
-use gw::cli::{Cli, Commands};
+use gw::cli::{Cli, Commands, OverviewArgs};
 use gw::context::Ctx;
 use gw::{commands, state};
 
 fn main() -> Result<()> {
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
 
-    // Default to `gw tree` when no subcommand is given
+    // Keep the default view cheap because it is the command used for navigation.
     let command = match cli.command {
-        Some(cmd) => cmd,
+        Some(cmd) => {
+            if cli.pr || cli.json {
+                bail!(
+                    "Top-level --pr and --json only apply to the default overview.\n\
+                     Use `gw overview --pr`, `gw overview --json`, or command-specific flags."
+                );
+            }
+            cmd
+        }
         None => {
-            let ctx = Ctx::discover()?;
-            return commands::tree::run(&ctx, cli.pr, false);
+            let (ctx, current_branch) = Ctx::discover_with_branch()?;
+            let args = OverviewArgs {
+                pr: cli.pr,
+                json: cli.json,
+            };
+            return commands::overview::run(args, &ctx, &current_branch);
         }
     };
 
@@ -28,43 +41,34 @@ fn main() -> Result<()> {
         return commands::mcp_server::run();
     }
 
-    let ctx = Ctx::discover()?;
+    let (ctx, current_branch) = Ctx::discover_with_branch()?;
 
     // State guard: block most commands if a propagation or split is in progress
     if let Some(ref active) = ctx.active_state()? {
         match active {
             state::ActiveState::Propagation(prop_state) => {
-                let is_split_op = prop_state.operation == state::Operation::Split;
                 let allowed = matches!(
-                    &command,
-                    Commands::Rebase(args) if args.cont || args.abort
+                    (&command, &prop_state.operation),
+                    (Commands::Rebase(args), state::Operation::Rebase) if args.cont || args.abort
                 ) || matches!(
-                    &command,
-                    Commands::Split(args) if (args.cont || args.abort) && is_split_op
+                    (&command, &prop_state.operation),
+                    (Commands::Sync(args), state::Operation::Sync) if args.cont || args.abort
+                ) || matches!(
+                    (&command, &prop_state.operation),
+                    (Commands::Split(args), state::Operation::Split) if args.cont || args.abort
                 ) || matches!(&command, Commands::Log(_))
+                    || matches!(&command, Commands::Overview(_))
                     || matches!(&command, Commands::Switch(_))
                     || matches!(&command, Commands::Status)
-                    || matches!(&command, Commands::Diff(_));
+                    || matches!(&command, Commands::Diff(_))
+                    || matches!(&command, Commands::Doctor(args) if !args.fix);
 
                 if !allowed {
-                    if is_split_op {
-                        bail!(
-                            "A split propagation is in progress on stack '{}'.\n\
-                             Run `gw split --continue` or `gw split --abort` first.",
-                            prop_state.stack
-                        );
-                    }
-                    let op = match prop_state.operation {
-                        state::Operation::Rebase => "rebase",
-                        state::Operation::Sync => "sync",
-                        state::Operation::Adopt => "adopt",
-                        state::Operation::BranchRemove => "branch remove",
-                        state::Operation::Split => unreachable!(),
-                    };
+                    let recovery_command = prop_state.operation.recovery_command();
                     bail!(
-                        "A {op} propagation is in progress on stack '{}'.\n\
-                         Run `gw rebase --continue` or `gw rebase --abort` first.",
-                        prop_state.stack
+                        "A {recovery_command} propagation is in progress on stack '{}'.\n\
+                         Run `gw {recovery_command} --continue` or `gw {recovery_command} --abort` first.",
+                        prop_state.stack,
                     );
                 }
             }
@@ -73,9 +77,11 @@ fn main() -> Result<()> {
                     &command,
                     Commands::Split(args) if args.cont || args.abort
                 ) || matches!(&command, Commands::Log(_))
+                    || matches!(&command, Commands::Overview(_))
                     || matches!(&command, Commands::Switch(_))
                     || matches!(&command, Commands::Status)
-                    || matches!(&command, Commands::Diff(_));
+                    || matches!(&command, Commands::Diff(_))
+                    || matches!(&command, Commands::Doctor(args) if !args.fix);
 
                 if !allowed {
                     bail!(
@@ -98,9 +104,14 @@ fn main() -> Result<()> {
         Commands::Sync(args) => commands::sync::run(args, &ctx),
         Commands::Push(args) => commands::push::run(args, &ctx),
         Commands::Switch(args) => commands::switch::run(args.branch, &ctx),
-        Commands::Log(args) => commands::tree::run(&ctx, args.pr, args.no_pager),
+        Commands::Log(args) => {
+            let options = commands::tree::Options::log(args.pr, args.no_pager);
+            commands::tree::run(&ctx, &current_branch, options)
+        }
+        Commands::Overview(args) => commands::overview::run(args, &ctx, &current_branch),
         Commands::Split(args) => commands::split::run(args, &ctx),
         Commands::Config(args) => commands::config::run(args.command, &ctx),
+        Commands::Doctor(args) => commands::doctor::run(args, &ctx),
         Commands::Completions(_) | Commands::McpSetup | Commands::McpServer => unreachable!(),
     }
 }

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use common::{TestRepo, gw_cmd};
 use predicates::prelude::*;
 
 /// Helper: create a stack with 3 branches, each with a unique commit.
@@ -58,7 +58,10 @@ fn rebase_propagates_to_descendants() {
     // SHAs should have changed (branches were rebased)
     let post_tests_sha = repo.git(&["rev-parse", "feature-tests"]);
     let post_ui_sha = repo.git(&["rev-parse", "feature-ui"]);
-    assert_ne!(pre_tests_sha, post_tests_sha, "feature-tests should be rebased");
+    assert_ne!(
+        pre_tests_sha, post_tests_sha,
+        "feature-tests should be rebased"
+    );
     assert_ne!(pre_ui_sha, post_ui_sha, "feature-ui should be rebased");
 
     // feature should be ancestor of feature-tests
@@ -73,12 +76,7 @@ fn rebase_propagates_to_descendants() {
 
     // feature-tests should be ancestor of feature-ui
     let is_ancestor = std::process::Command::new("git")
-        .args([
-            "merge-base",
-            "--is-ancestor",
-            "feature-tests",
-            "feature-ui",
-        ])
+        .args(["merge-base", "--is-ancestor", "feature-tests", "feature-ui"])
         .current_dir(&repo.path)
         .output()
         .unwrap()
@@ -91,6 +89,32 @@ fn rebase_propagates_to_descendants() {
 
     // Should be back on original branch
     assert_eq!(repo.current_branch(), "feature");
+}
+
+#[test]
+fn rebase_recovery_command_is_rejected_for_split_state() {
+    let repo = TestRepo::new();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "feature"])
+        .assert()
+        .success();
+    repo.write_state_toml(
+        r#"
+operation = "split"
+stack = "feature"
+started_at = "1"
+original_branch = "feature"
+original_refs = []
+completed = []
+remaining = []
+"#,
+    );
+
+    gw_cmd(&repo.path)
+        .args(["rebase", "--continue"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("gw split --continue"));
 }
 
 #[test]
@@ -208,17 +232,17 @@ fn rebase_abort_restores_branches() {
     repo.commit_file("shared.txt", "from feature root", "modify shared on root");
 
     // Try rebase - should conflict
-    let output = gw_cmd(&repo.path)
-        .args(["rebase"])
-        .output()
-        .unwrap();
+    let output = gw_cmd(&repo.path).args(["rebase"]).output().unwrap();
     assert!(output.status.success());
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(combined.contains("Conflict"), "expected conflict message, got: {combined}");
+    assert!(
+        combined.contains("Conflict"),
+        "expected conflict message, got: {combined}"
+    );
 
     // State file should exist
     assert!(repo.state_toml_exists());
@@ -235,7 +259,10 @@ fn rebase_abort_restores_branches() {
 
     // Branch should be back to original SHA
     let post_b_sha = repo.git(&["rev-parse", "feature-b"]);
-    assert_eq!(pre_b_sha, post_b_sha, "feature-b should be restored to original SHA");
+    assert_eq!(
+        pre_b_sha, post_b_sha,
+        "feature-b should be restored to original SHA"
+    );
 }
 
 #[test]
@@ -287,17 +314,17 @@ fn rebase_conflict_then_continue() {
     repo.commit_file("conflict.txt", "from-root", "modify on root");
 
     // Rebase should hit a conflict
-    let output = gw_cmd(&repo.path)
-        .args(["rebase"])
-        .output()
-        .unwrap();
+    let output = gw_cmd(&repo.path).args(["rebase"]).output().unwrap();
     assert!(output.status.success());
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(combined.contains("Conflict"), "expected conflict, got: {combined}");
+    assert!(
+        combined.contains("Conflict"),
+        "expected conflict, got: {combined}"
+    );
 
     assert!(repo.state_toml_exists());
 
@@ -314,9 +341,9 @@ fn rebase_conflict_then_continue() {
 
     assert!(!repo.state_toml_exists());
 
-    // Verify the conflict was resolved - file should have our resolved content
-    let content = std::fs::read_to_string(repo.path.join("conflict.txt")).unwrap();
-    assert!(content.contains("resolved"));
+    assert_eq!(repo.current_branch(), "feature");
+    let resolved = repo.git(&["show", "feature-b:conflict.txt"]);
+    assert!(resolved.contains("resolved"));
 }
 
 // ============================================================

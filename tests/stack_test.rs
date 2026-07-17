@@ -1,6 +1,6 @@
 mod common;
 
-use common::{gw_cmd, TestRepo};
+use common::{TestRepo, gw_cmd};
 use predicates::prelude::*;
 
 // ============================================================
@@ -81,7 +81,9 @@ fn stack_create_branch_already_exists_fails() {
         .args(["stack", "create", "my-feature"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Branch 'my-feature' already exists"))
+        .stderr(predicate::str::contains(
+            "Branch 'my-feature' already exists",
+        ))
         .stderr(predicate::str::contains("gw adopt"));
 }
 
@@ -159,6 +161,27 @@ fn stack_delete_nonexistent_fails() {
         .stderr(predicate::str::contains("does not exist"));
 }
 
+#[test]
+fn stack_rename_moves_metadata() {
+    let repo = TestRepo::new();
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "auth"])
+        .assert()
+        .success();
+
+    gw_cmd(&repo.path)
+        .args(["stack", "rename", "auth", "identity"])
+        .assert()
+        .success();
+
+    assert!(!repo.stack_toml_exists("auth"));
+    assert!(repo.stack_toml_exists("identity"));
+    assert!(
+        repo.read_stack_toml("identity")
+            .contains("name = \"identity\"")
+    );
+}
+
 // ============================================================
 // gw stack list
 // ============================================================
@@ -194,10 +217,7 @@ fn stack_list_shows_stacks() {
 
     repo.git(&["checkout", &main_branch]);
 
-    let output = gw_cmd(&repo.path)
-        .args(["stack", "list"])
-        .output()
-        .unwrap();
+    let output = gw_cmd(&repo.path).args(["stack", "list"]).output().unwrap();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("auth"));
@@ -242,10 +262,7 @@ current = "feature-b"
         .failure();
 
     // tree should still work (read-only)
-    gw_cmd(&repo.path)
-        .args(["tree"])
-        .assert()
-        .success();
+    gw_cmd(&repo.path).args(["tree"]).assert().success();
 }
 
 // ============================================================
@@ -284,7 +301,7 @@ fn version_flag_works() {
 }
 
 #[test]
-fn no_args_defaults_to_tree() {
+fn no_args_shows_stack_summary() {
     // Inside a git repo, `gw` with no args runs `gw tree`
     let repo = TestRepo::new();
     gw_cmd(&repo.path)

@@ -11,7 +11,7 @@ description: >
   detailed guidance on gw workflows.
   DO NOT TRIGGER when: simple commit, push, single PR creation, branch
   switching, or basic git operations (the plugin CLAUDE.md handles those).
-allowed-tools: Bash, Read, Edit, Write, Glob, Grep, mcp__gw__gw_stack_create, mcp__gw__gw_stack_list, mcp__gw__gw_stack_delete, mcp__gw__gw_branch_create, mcp__gw__gw_branch_remove, mcp__gw__gw_log, mcp__gw__gw_log_pr, mcp__gw__gw_push, mcp__gw__gw_force_push, mcp__gw__gw_rebase, mcp__gw__gw_rebase_continue, mcp__gw__gw_rebase_abort, mcp__gw__gw_sync, mcp__gw__gw_sync_rebase, mcp__gw__gw_sync_merged, mcp__gw__gw_switch, mcp__gw__gw_split, mcp__gw__gw_split_continue, mcp__gw__gw_split_abort, mcp__github__create_pull_request
+allowed-tools: Bash, Read, Edit, Write, Glob, Grep, mcp__gw__gw_overview, mcp__gw__gw_overview_pr, mcp__gw__gw_status, mcp__gw__gw_diff_stat, mcp__gw__gw_stack_create, mcp__gw__gw_stack_list, mcp__gw__gw_stack_delete, mcp__gw__gw_stack_rename, mcp__gw__gw_branch_create, mcp__gw__gw_branch_remove, mcp__gw__gw_branch_rename, mcp__gw__gw_log, mcp__gw__gw_log_pr, mcp__gw__gw_push, mcp__gw__gw_force_push, mcp__gw__gw_push_stack, mcp__gw__gw_force_push_stack, mcp__gw__gw_rebase, mcp__gw__gw_rebase_continue, mcp__gw__gw_rebase_abort, mcp__gw__gw_sync, mcp__gw__gw_sync_rebase, mcp__gw__gw_sync_merged, mcp__gw__gw_sync_continue, mcp__gw__gw_sync_abort, mcp__gw__gw_switch, mcp__gw__gw_split, mcp__gw__gw_split_continue, mcp__gw__gw_split_abort, mcp__gw__gw_doctor, mcp__github__create_pull_request
 ---
 
 # Git Workflow with gw
@@ -27,8 +27,8 @@ You are working in a repo that uses **gw**, a stacked branch manager. Use gw too
 ### Use raw git for:
 - `git add` / `git stage` - staging files
 - `git commit` - creating commits
-- `git status` - checking working tree state
-- `git diff` - viewing changes
+- `git status` - focused raw working tree checks (`gw_status` adds stack context)
+- `git diff` - focused file changes (`gw_diff_stat` summarizes the branch against its parent)
 - `git log` - viewing commit history (though `gw_log` shows the stack view)
 - `git stash` - stashing changes
 
@@ -38,14 +38,14 @@ You are working in a repo that uses **gw**, a stacked branch manager. Use gw too
 - **Pushing** - `gw_push` instead of `git push` (handles force-with-lease automatically)
 - **Rebasing** - `gw_rebase` instead of `git rebase` (propagates to descendants)
 - **Syncing with base** - `gw_sync` instead of `git pull --rebase`
-- **Viewing branch state** - `gw_log` instead of `git branch`
+- **Viewing stack state** - `gw_overview` first; `gw_log` when commit history is needed
 - **Splitting branches** - `gw_split` to decompose a fat branch into a stack
 
 ## Workflow Patterns
 
 ### Starting new work
 
-1. Check if there's an existing stack: `gw_log`
+1. Check if there's an existing stack: `gw_overview`
 2. Create a new stack: `gw_stack_create` with a short descriptive name
 3. Do work, commit with git as normal
 4. When the first logical unit is done and you need to start the next piece, create the next branch: `gw_branch_create`
@@ -103,7 +103,7 @@ This creates a 3-branch stack: `feature-models` (2 commits) → `feature-api` (1
 
 ### Pushing work
 
-Use `gw_push` to push the current branch. It only pushes the current branch and automatically uses force-with-lease when needed (e.g., after a rebase). Never use raw `git push` for branches managed by gw.
+Use `gw_push` to push only the current branch. After a propagated rebase, use `gw_push_stack` to preview and push the current branch plus every descendant. If any branches need force-with-lease, get explicit confirmation before using `gw_force_push` or `gw_force_push_stack`. Never use raw `git push` for branches managed by gw.
 
 ### After making changes to an earlier branch
 
@@ -136,14 +136,14 @@ Create PRs bottom-up (root branch first, then its children). Each PR targets its
 - Root branch PR targets the base branch (e.g., `main`)
 - Child branch PRs target their parent branch in the stack
 
-Use `gw_log_pr` to see PR status for all branches in the stack.
+Use `gw_overview_pr` to see PR status quickly. Use `gw_log_pr` when commit history is also relevant.
 
 ## Important Rules
 
 1. **Never `git push` directly** for gw-managed branches. Always use `gw_push`.
 2. **Never `git checkout -b`** to create branches that should be part of a stack. Use `gw_branch_create`.
 3. **Never `git rebase` directly** on stacked branches. Use `gw_rebase` so descendants get updated.
-4. **Check `gw_log` first** before creating new branches to understand the current stack state.
+4. **Check `gw_overview` first** before creating new branches to understand the current stack state.
 5. **One concern per branch** - each branch in a stack should have a clear, reviewable purpose.
 6. **Commit with git, manage with gw** - this is the fundamental split.
 7. **Full SHAs in split plans** - `gw_split` requires 40-character commit SHAs, not short hashes.
