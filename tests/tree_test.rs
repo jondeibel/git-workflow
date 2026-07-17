@@ -99,6 +99,7 @@ fn default_command_omits_commits() {
 #[test]
 fn overview_json_is_structured_and_omits_commits() {
     let repo = TestRepo::new();
+    let base = repo.current_branch();
     gw_cmd(&repo.path)
         .args(["stack", "create", "auth"])
         .assert()
@@ -111,10 +112,49 @@ fn overview_json_is_structured_and_omits_commits() {
         .unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["bases"][0]["name"], base);
     assert_eq!(value["stacks"][0]["name"], "auth");
     assert_eq!(
         value["stacks"][0]["branches"][0]["commits"],
         serde_json::json!([])
+    );
+}
+
+#[test]
+fn tree_separates_base_remote_lag_from_stack_base_lag() {
+    let repo = TestRepo::new();
+    let base = repo.current_branch();
+    let remote = TempDir::new().unwrap();
+    repo.git(&["init", "--bare", remote.path().to_str().unwrap()]);
+    repo.git(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
+    repo.git(&["push", "--set-upstream", "origin", &base]);
+
+    gw_cmd(&repo.path)
+        .args(["stack", "create", "feature"])
+        .assert()
+        .success();
+    repo.commit_file("feature.txt", "feature", "feature work");
+    repo.git(&["checkout", &base]);
+    repo.commit_file("base-1.txt", "one", "first base advance");
+    repo.commit_file("base-2.txt", "two", "second base advance");
+    repo.git(&["push", "origin", &base]);
+
+    repo.git(&["checkout", "-b", "remote-advance"]);
+    repo.commit_file("remote.txt", "remote", "remote base advance");
+    repo.git(&["push", "origin", &format!("remote-advance:{base}")]);
+    repo.git(&["checkout", &base]);
+    repo.git(&["branch", "-D", "remote-advance"]);
+    repo.git(&["fetch", "origin"]);
+
+    let output = gw_cmd(&repo.path).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(&format!("1 behind origin/{base}")),
+        "should show local base lag from its remote: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("2 behind {base}")),
+        "should show stack lag from its local base: {stdout}"
     );
 }
 

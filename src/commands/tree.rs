@@ -5,7 +5,8 @@ use colored::Colorize;
 
 use crate::context::Ctx;
 use crate::snapshot::{
-    self, BranchSnapshot, RemoteStatus, RepositorySnapshot, SnapshotOptions, StackSnapshot,
+    self, BaseSnapshot, BranchSnapshot, RemoteStatus, RepositorySnapshot, SnapshotOptions,
+    StackSnapshot,
 };
 use crate::ui;
 
@@ -95,43 +96,45 @@ impl OutputBuffer {
 
 fn render_tree(snapshot: &RepositorySnapshot) -> RenderedTree {
     let mut output = OutputBuffer::default();
-    for (base, stacks) in group_stacks_by_base(&snapshot.stacks) {
-        render_base(&base, &stacks, &mut output);
+    for base in &snapshot.bases {
+        let stacks = snapshot
+            .stacks
+            .iter()
+            .filter(|stack| stack.base_branch == base.name)
+            .collect::<Vec<_>>();
+        render_base(base, &stacks, &mut output);
     }
     output.finish()
 }
 
-fn group_stacks_by_base(stacks: &[StackSnapshot]) -> Vec<(String, Vec<&StackSnapshot>)> {
-    let mut groups: Vec<(String, Vec<&StackSnapshot>)> = vec![];
-    for stack in stacks {
-        if let Some(group) = groups.iter_mut().find(|group| group.0 == stack.base_branch) {
-            group.1.push(stack);
-            continue;
-        }
-        groups.push((stack.base_branch.clone(), vec![stack]));
-    }
-    groups
-}
-
-fn render_base(base: &str, stacks: &[&StackSnapshot], output: &mut OutputBuffer) {
-    let behind = stacks
-        .iter()
-        .map(|stack| stack.behind_base)
-        .max()
-        .unwrap_or(0);
-    output.push(format_base_line(base, behind), false);
+fn render_base(base: &BaseSnapshot, stacks: &[&StackSnapshot], output: &mut OutputBuffer) {
+    output.push(format_base_line(base), false);
     for (index, stack) in stacks.iter().enumerate() {
         render_stack(stack, index + 1 == stacks.len(), output);
     }
 }
 
-fn format_base_line(base: &str, behind: usize) -> String {
-    if behind == 0 {
-        return format!("{} {}", "◇".cyan(), base.cyan().bold());
-    }
-    let suffix = if behind == 1 { "" } else { "s" };
-    let tag = format!("{behind} commit{suffix} behind origin/{base}").yellow();
-    format!("{} {}  {tag}", "◇".cyan(), base.cyan().bold())
+fn format_base_line(base: &BaseSnapshot) -> String {
+    let name = base.name.cyan().bold();
+    let Some(upstream) = &base.upstream else {
+        return format!("{} {name}", "◇".cyan());
+    };
+    let tag = match &base.remote {
+        RemoteStatus::UpToDate => format!("up to date with {upstream}").dimmed().to_string(),
+        RemoteStatus::NeedsPush { ahead } => {
+            format!("{ahead} ahead of {upstream}").yellow().to_string()
+        }
+        RemoteStatus::Behind { behind } => {
+            format!("{behind} behind {upstream}").yellow().to_string()
+        }
+        RemoteStatus::Diverged { ahead, behind } => {
+            format!("{ahead} ahead, {behind} behind {upstream}")
+                .yellow()
+                .to_string()
+        }
+        RemoteStatus::NoRemote => return format!("{} {name}", "◇".cyan()),
+    };
+    format!("{} {name}  {tag}", "◇".cyan())
 }
 
 fn render_stack(stack: &StackSnapshot, is_last: bool, output: &mut OutputBuffer) {
@@ -156,7 +159,7 @@ fn format_stack_line(stack: &StackSnapshot, fork: &str) -> String {
     if stack.behind_base == 0 {
         return format!("{} {}", fork.dimmed(), stack.name.magenta().bold());
     }
-    let tag = format!("{} behind", stack.behind_base).yellow();
+    let tag = format!("{} behind {}", stack.behind_base, stack.base_branch).yellow();
     format!("{} {}  {tag}", fork.dimmed(), stack.name.magenta().bold())
 }
 

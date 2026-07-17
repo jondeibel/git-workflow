@@ -19,8 +19,16 @@ pub struct SnapshotOptions {
 #[derive(Debug, Serialize)]
 pub struct RepositorySnapshot {
     pub current_branch: String,
+    pub bases: Vec<BaseSnapshot>,
     pub stacks: Vec<StackSnapshot>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BaseSnapshot {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub remote: RemoteStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +89,7 @@ pub fn load(
     if stacks.is_empty() {
         return Ok(RepositorySnapshot {
             current_branch: current_branch.to_string(),
+            bases: vec![],
             stacks: vec![],
             warnings,
         });
@@ -291,6 +300,7 @@ fn build_snapshot(
     behind_counts: &HashMap<String, usize>,
     pull_requests: &HashMap<String, gh::PrInfo>,
 ) -> RepositorySnapshot {
+    let bases = build_base_snapshots(stacks, refs);
     let stacks = stacks
         .iter()
         .map(|stack| {
@@ -307,9 +317,33 @@ fn build_snapshot(
         .collect();
     RepositorySnapshot {
         current_branch: current_branch.to_string(),
+        bases,
         stacks,
         warnings: vec![],
     }
+}
+
+fn build_base_snapshots(
+    stacks: &[StackConfig],
+    refs: &HashMap<String, RefInfo>,
+) -> Vec<BaseSnapshot> {
+    let base_names = stacks
+        .iter()
+        .map(|stack| stack.base_branch.as_str())
+        .collect::<BTreeSet<_>>();
+    base_names
+        .into_iter()
+        .map(|name| {
+            let ref_info = refs.get(name);
+            BaseSnapshot {
+                name: name.to_string(),
+                upstream: ref_info.and_then(|info| info.upstream.clone()),
+                remote: ref_info
+                    .map(|info| info.remote.clone())
+                    .unwrap_or(RemoteStatus::NoRemote),
+            }
+        })
+        .collect()
 }
 
 fn build_stack_snapshot(
@@ -382,6 +416,7 @@ fn needs_rebase(
 #[derive(Clone)]
 struct RefInfo {
     sha: String,
+    upstream: Option<String>,
     remote: RemoteStatus,
 }
 
@@ -399,6 +434,11 @@ fn parse_ref_info(output: &str) -> HashMap<String, RefInfo> {
             name.to_string(),
             RefInfo {
                 sha,
+                upstream: if upstream.is_empty() {
+                    None
+                } else {
+                    Some(upstream.to_string())
+                },
                 remote: parse_remote_status(upstream, track),
             },
         );
